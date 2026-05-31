@@ -78,7 +78,7 @@ function routeToSegment(route: OsrmRoute | null | undefined): WalkingSegment | n
       const lon = Number(point[0]);
       if (Number.isFinite(lat) && Number.isFinite(lon)) points.push([lat, lon]);
       return points;
-    }, []),
+    }, [] as [number, number][]),
     isFallback: false
   };
 }
@@ -250,7 +250,7 @@ function routeToLatLngs(route: OsrmRoute | undefined): LatLng[] {
     const lon = Number(point[0]);
     if (Number.isFinite(lat) && Number.isFinite(lon)) points.push({ lat, lon });
     return points;
-  }, []);
+  }, [] as LatLng[]);
 }
 
 function sampleRoutePoints(points: LatLng[]): LatLng[] {
