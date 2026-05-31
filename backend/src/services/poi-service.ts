@@ -4,7 +4,7 @@ import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v22";
+const POI_CACHE_VERSION = "wikidata-auto-v23";
 const WIKIDATA_READY_COUNT = 30;
 const OVERPASS_RADIUS_METERS = 18000;
 const OVERPASS_RESULT_LIMIT = 220;
@@ -287,7 +287,7 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
         generator: "geosearch",
         ggscoord: `${center.lat}|${center.lon}`,
         ggsradius: 10000,
-        ggslimit: 50,
+        ggslimit: 100,
         prop: "coordinates|description|pageimages|pageprops",
         piprop: "thumbnail",
         pithumbsize: 360,
