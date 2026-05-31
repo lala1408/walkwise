@@ -60,7 +60,7 @@ export async function buildWalkingPlan(input: PlanInput) {
 
   const preferenceText =
     input.routePreference === "beautiful"
-      ? "Schoenste Route nutzt die kuerzeste Gesamt-Reihenfolge und bevorzugt angenehmere Fussweg-Alternativen zwischen den Stopps."
+      ? "Schoenste Route nutzt die kuerzeste Gesamt-Reihenfolge und bewertet Fusswege nach Parks, Wasser, Plaetzen, Fussgaengerzonen und grossen Strassen."
       : "Schnellste Route minimiert die geschaetzte Gesamtgehzeit ueber alle Stopps.";
   const fallbackText = usedFallback ? " Einzelne Abschnitte wurden geschätzt, weil der Fußwegdienst nicht geantwortet hat." : "";
   const budgetText = input.timeBudgetMinutes ? `, ${dropped.length} ausgelassen (Zeitbudget)` : "";
