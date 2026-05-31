@@ -115,10 +115,8 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const overpassController = new AbortController();
   const osmPromise = fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center), overpassController.signal);
   const wikidataPois = center ? await fetchWikidataCandidates(city, center, categories) : [];
-  const osmPois =
-    center && wikidataPois.length >= FALLBACK_READY_COUNT
-      ? await resolveWithin(osmPromise, 1200, []).finally(() => overpassController.abort())
-      : await osmPromise;
+  const osmWaitMs = wikidataPois.length >= FALLBACK_READY_COUNT ? 1200 : 4500;
+  const osmPois = center ? await resolveWithin(osmPromise, osmWaitMs, []).finally(() => overpassController.abort()) : await osmPromise;
   const enrichedPrimaryPois = await enrichWikidataImages(mergePois([...osmPois, ...wikidataPois]).sort(sortByPopularity).slice(0, ENRICHMENT_POOL_LIMIT));
   const primaryPois = mergePois(enrichedPrimaryPois).filter((poi) => isLikelySightseeingPoi(poi, city, center)).sort(sortByPopularity);
   const fallbackPois = center && primaryPois.length < FALLBACK_READY_COUNT ? await fetchFallbackOpenDataPois(city, center, categories) : [];
