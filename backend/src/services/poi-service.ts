@@ -5,10 +5,12 @@ import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v27";
-const WIKIDATA_READY_COUNT = 8;
-const OVERPASS_RADIUS_METERS = 18000;
-const OVERPASS_RESULT_LIMIT = 220;
+const POI_CACHE_VERSION = "poi-first-v28";
+const FALLBACK_READY_COUNT = 18;
+const TARGET_POI_COUNT = 50;
+const ENRICHMENT_POOL_LIMIT = 260;
+const OVERPASS_RADIUS_METERS = 12000;
+const OVERPASS_RESULT_LIMIT = 500;
 type InternalPoi = Poi & { wikidataId?: string; hasCustomDescription: boolean; popularityScore: number };
 type WikidataTypeCategory = { id: string; category: string };
 const EXCLUDED_WIKIDATA_TYPE_IDS = new Set([
@@ -33,6 +35,16 @@ const EXCLUDED_WIKIDATA_TYPE_IDS = new Set([
   "Q476028",
   "Q12973014"
 ]);
+
+const OSM_POI_SELECTORS = [
+  'tourism~"^(attraction|museum|gallery|viewpoint|zoo|aquarium|theme_park)$"',
+  'historic~"^(monument|castle|archaeological_site)$"',
+  'leisure~"^(park|garden)$"',
+  'amenity~"^(theatre|arts_centre)$"',
+  'man_made~"^(tower|lighthouse)$"',
+  'building="cathedral"',
+  'place="square"'
+];
 
 const CATEGORY_TAGS: Record<string, string[]> = {
   museum: ['tourism="museum"'],
@@ -100,28 +112,36 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const cached = POI_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const [wikidataResult, wikipediaGeoResult, wikipediaSearchResult] = center
+  const [osmResult, wikidataResult] = center
     ? await Promise.allSettled([
-        fetchWikidataCandidates(city, center, categories),
-        fetchWikipediaGeoPois(city, center),
-        fetchWikipediaSearchPois(city, center)
+        fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center)),
+        fetchWikidataCandidates(city, center, categories)
       ])
     : [
-        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
-        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
+        { status: "fulfilled", value: await fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center)) } as PromiseFulfilledResult<
+          InternalPoi[]
+        >,
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>
       ];
+  const osmPois = osmResult.status === "fulfilled" ? osmResult.value : [];
   const wikidataPois = wikidataResult.status === "fulfilled" ? wikidataResult.value : [];
-  const wikipediaGeoPois = wikipediaGeoResult.status === "fulfilled" ? wikipediaGeoResult.value : [];
-  const wikipediaSearchPois = wikipediaSearchResult.status === "fulfilled" ? wikipediaSearchResult.value : [];
-  const openDataPois = mergePois([...wikidataPois, ...wikipediaSearchPois, ...wikipediaGeoPois]).sort(sortByPopularity);
-  const osmPois =
-    openDataPois.length >= WIKIDATA_READY_COUNT ? [] : await fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center));
-  const merged = mergePois([...openDataPois, ...osmPois]).sort(sortByPopularity).slice(0, 50);
-  const needsEnrichment = merged.some((poi) => poi.wikidataId && (isPlaceholderImage(poi.imageUrl) || !poi.hasCustomDescription));
-  const pois = stripInternalPoiFields(needsEnrichment ? await enrichWikidataImages(merged) : merged);
+  const enrichedPrimaryPois = await enrichWikidataImages(mergePois([...osmPois, ...wikidataPois]).sort(sortByPopularity).slice(0, ENRICHMENT_POOL_LIMIT));
+  const primaryPois = mergePois(enrichedPrimaryPois).filter((poi) => isLikelySightseeingPoi(poi, city, center)).sort(sortByPopularity);
+  const fallbackPois = center && primaryPois.length < FALLBACK_READY_COUNT ? await fetchFallbackOpenDataPois(city, center, categories) : [];
+  const merged = mergePois([...primaryPois, ...fallbackPois])
+    .filter((poi) => isLikelySightseeingPoi(poi, city, center))
+    .sort(sortByPopularity)
+    .slice(0, TARGET_POI_COUNT);
+  const pois = stripInternalPoiFields(merged);
   if (pois.length) POI_CACHE.set(cacheKey, pois);
   return pois;
+}
+
+async function fetchFallbackOpenDataPois(city: string, center: LatLng, categories: string[]): Promise<InternalPoi[]> {
+  const [wikipediaGeoResult, wikipediaSearchResult] = await Promise.allSettled([fetchWikipediaGeoPois(city, center), fetchWikipediaSearchPois(city, center)]);
+  const wikipediaGeoPois = wikipediaGeoResult.status === "fulfilled" ? wikipediaGeoResult.value : [];
+  const wikipediaSearchPois = wikipediaSearchResult.status === "fulfilled" ? wikipediaSearchResult.value : [];
+  return mergePois([...wikipediaSearchPois, ...wikipediaGeoPois]).sort(sortByPopularity);
 }
 
 async function fetchOverpassPois(query: string): Promise<InternalPoi[]> {
@@ -131,7 +151,7 @@ async function fetchOverpassPois(query: string): Promise<InternalPoi[]> {
         "Content-Type": "application/x-www-form-urlencoded",
         ...OPEN_DATA_HEADERS
       },
-      timeout: 4500
+      timeout: 6500
     });
     return normalizePois(response.data?.elements ?? []);
   } catch {
@@ -144,12 +164,12 @@ function buildOverpassQuery(city: string, categories: string[], osmType?: string
   const areaSetup = center ? "" : `${buildAreaSelector(city, osmType, osmId)}->.searchArea;`;
   const searchScope = center ? `(around:${OVERPASS_RADIUS_METERS},${center.lat},${center.lon})` : "(area.searchArea)";
   return `
-  [out:json][timeout:8];
+  [out:json][timeout:7];
   ${areaSetup}
   (
-    ${selectors.map((selector) => `node[${selector}]${searchScope};`).join("\n")}
-    ${selectors.map((selector) => `way[${selector}]${searchScope};`).join("\n")}
     ${selectors.map((selector) => `relation[${selector}]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `way[${selector}]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `node[${selector}]${searchScope};`).join("\n")}
   );
   out center tags ${OVERPASS_RESULT_LIMIT};
   `;
@@ -185,6 +205,7 @@ function normalizePois(elements: any[]): InternalPoi[] {
     if (seen.has(id)) continue;
     seen.add(id);
     const tags = el.tags ?? {};
+    if (!isLikelyOsmSightseeingTags(tags)) continue;
     pois.push({
       id,
       name,
@@ -252,7 +273,7 @@ function curatedHighlights(city: string, categories: string[]): InternalPoi[] {
 
 async function fetchWikidataCandidates(city: string, center: LatLng, categories: string[]): Promise<InternalPoi[]> {
   const query = `
-    SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks WHERE {
+    SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks ?image ?description WHERE {
       {
         SELECT ?item (SAMPLE(?rawCoord) AS ?coord) (MAX(?rawSitelinks) AS ?sitelinks) WHERE {
           SERVICE wikibase:around {
@@ -272,6 +293,11 @@ async function fetchWikidataCandidates(city: string, center: LatLng, categories:
         ?type rdfs:label ?typeLabel.
         FILTER(LANG(?typeLabel) = "en")
       }
+      OPTIONAL { ?item wdt:P18 ?image. }
+      OPTIONAL {
+        ?item schema:description ?description.
+        FILTER(LANG(?description) IN ("de", "en"))
+      }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
     }
     ORDER BY DESC(?sitelinks)
@@ -279,7 +305,7 @@ async function fetchWikidataCandidates(city: string, center: LatLng, categories:
   `;
 
   try {
-    const response = await requestWikidata(query, 4000, false);
+    const response = await requestWikidata(query, 4500, false);
     return normalizeWikidataPois(response.data?.results?.bindings ?? [], categories, city);
   } catch {
     return [];
@@ -348,6 +374,7 @@ function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0, cent
       if (isSameCityEntity(name, city) || isExcludedSightseeingName(name) || isExcludedWikipediaDescription(page.description)) return pois;
 
       const description = String(page.description ?? "");
+      if (!isLikelyWikipediaPlace(name, description)) return pois;
       const category = categoryFromText(`${name} ${description}`);
       const wikidataId = String(page.pageprops?.wikibase_item ?? "");
       pois.push({
@@ -413,10 +440,20 @@ function normalizeWikidataPois(bindings: any[], categories: string[] = [], city 
   const pois: InternalPoi[] = [];
   for (const [wikidataId, item] of grouped) {
     const usableTypes = item.types.filter((type) => !isExcludedWikidataType(type.label, type.id));
-    if (item.types.length > 0 && usableTypes.length === 0) continue;
+    if (!item.types.length || usableTypes.length === 0) continue;
+    if (isExcludedWikipediaDescription(item.description)) continue;
 
     const selectedType = chooseBestWikidataType(usableTypes);
     const category = categoryForWikidataType(selectedType.id, selectedType.label);
+    if (category === "architecture" && item.sitelinks < 120 && /hotel|skyscraper|office building|residential building|commercial building|mixed-use|high-rise/i.test(selectedType.label))
+      continue;
+    if (
+      category === "landmark" &&
+      !/tourist attraction|landmark|visitor attraction|public art|zoo|aquarium|theme park|heritage site|historic site|archaeological site|square|plaza|market/i.test(
+        selectedType.label
+      )
+    )
+      continue;
     if (!wantsAllCategories && !categories.includes(category)) continue;
     pois.push({
       id: `wikidata/${wikidataId}`,
@@ -561,13 +598,16 @@ function deriveCategory(tags: Record<string, string>): string {
   if (tags.tourism === "museum") return "museum";
   if (tags.tourism === "gallery") return "gallery";
   if (tags.tourism === "viewpoint") return "viewpoint";
+  if (tags.tourism === "zoo" || tags.tourism === "aquarium" || tags.tourism === "theme_park") return "landmark";
   if (tags.historic === "monument") return "monument";
   if (tags.historic === "memorial") return "memorial";
   if (tags.historic === "castle") return "castle";
   if (tags.amenity === "place_of_worship" || tags.building === "cathedral" || tags.building === "church") return "church";
   if (tags.place === "square") return "square";
   if (tags.leisure === "park" || tags.leisure === "garden") return "park";
-  if (tags.historic || tags.building) return "architecture";
+  if (tags.amenity === "theatre" || tags.amenity === "arts_centre") return "architecture";
+  if (tags.man_made === "tower") return "viewpoint";
+  if (tags.historic || tags.building || tags.man_made) return "architecture";
   return "landmark";
 }
 
@@ -635,25 +675,68 @@ function extractCommonsFile(value?: string): string | null {
   return value.includes(".") ? value : null;
 }
 
+function isLikelyOsmSightseeingTags(tags: Record<string, string>): boolean {
+  if (tags.access === "private") return false;
+  if (tags.tourism === "information" || tags.tourism === "hotel") return false;
+  if (tags.historic === "boundary_stone" || tags.historic === "wayside_cross") return false;
+  if (tags.memorial === "plaque" && !tags.wikidata && !tags.wikipedia) return false;
+  if (tags.amenity === "place_of_worship" && !tags.wikidata && !tags.wikipedia && !tags.heritage) return false;
+  if (tags.building === "church" && !tags.wikidata && !tags.wikipedia && !tags.heritage) return false;
+  return true;
+}
+
+function isLikelySightseeingPoi(poi: InternalPoi, city: string, center?: LatLng): boolean {
+  if (isSameCityEntity(poi.name, city) || isExcludedSightseeingName(poi.name)) return false;
+  if (isExcludedWikipediaDescription(poi.description)) return false;
+  if (center && haversineKm(center, poi.location) > OVERPASS_RADIUS_METERS / 1000 + 10) return false;
+  if (poi.category === "landmark" && poi.priority < 3 && poi.popularityScore < 45) return false;
+  return true;
+}
+
+function isLikelyWikipediaPlace(name: string, description: string): boolean {
+  const normalized = `${name} ${description}`.toLowerCase();
+  if (isExcludedSightseeingName(name) || isExcludedWikipediaDescription(normalized)) return false;
+  return /\b(museum|gallery|cathedral|church|basilica|chapel|abbey|synagogue|mosque|temple|monument|memorial|landmark|tourist attraction|park|garden|square|plaza|palace|castle|fort|tower|bridge|viewpoint|lookout|theatre|theater|opera house|building|library|aquarium|zoo|beach|harbou?r|market|historic site|public art|botanical)\b/.test(
+    normalized
+  );
+}
+
+function categoryBaseScore(tags: Record<string, string>): number {
+  if (tags.tourism === "attraction") return 92;
+  if (tags.tourism === "museum") return 88;
+  if (tags.tourism === "viewpoint") return 82;
+  if (tags.tourism === "zoo" || tags.tourism === "aquarium" || tags.tourism === "theme_park") return 80;
+  if (tags.historic === "castle") return 78;
+  if (tags.historic === "monument") return 74;
+  if (tags.leisure === "park" || tags.leisure === "garden") return 66;
+  if (tags.place === "square") return 64;
+  if (tags.man_made === "tower" || tags.man_made === "lighthouse") return 62;
+  if (tags.amenity === "theatre" || tags.amenity === "arts_centre") return 60;
+  if (tags.building === "cathedral") return 58;
+  if (tags.amenity === "place_of_worship" || tags.building === "church") return 52;
+  if (tags.historic === "memorial") return 48;
+  if (tags.historic || tags.building || tags.man_made) return 44;
+  return 36;
+}
+
 function derivePriority(tags: Record<string, string>): number {
-  let score = 1;
-  if (tags.wikipedia) score += 1;
-  if (tags.wikidata) score += 1;
-  if (tags.tourism === "museum") score += 1;
-  return score;
+  const category = deriveCategory(tags);
+  let score = category === "museum" || category === "landmark" || category === "viewpoint" ? 3 : 2;
+  if (tags.wikidata || tags.wikipedia) score += 1;
+  if (tags.image || tags.wikimedia_commons || tags.website || tags.heritage) score += 1;
+  return Math.min(score, 5);
 }
 
 function derivePopularityScore(tags: Record<string, string>): number {
-  let score = 0;
-  if (tags.wikidata) score += 40;
-  if (tags.wikipedia) score += 35;
-  if (tags.image || tags.wikimedia_commons) score += 25;
-  if (tags.website) score += 15;
-  if (tags.tourism === "museum" || tags.tourism === "attraction") score += 14;
-  if (tags.historic === "monument" || tags.historic === "castle") score += 12;
-  if (tags.tourism === "viewpoint") score += 10;
-  if (tags.heritage) score += 10;
+  let score = categoryBaseScore(tags);
+  if (tags.wikidata) score += 80;
+  if (tags.wikipedia) score += 65;
+  if (tags.image || tags.wikimedia_commons) score += 30;
+  if (tags.website) score += 18;
+  if (tags.heritage) score += 25;
   if (tags.name) score += Math.min(String(tags.name).length, 30) / 10;
+  if (tags.memorial === "plaque" || tags.historic === "wayside_cross" || tags.artwork_type === "mural") score -= 40;
+  if (tags.access === "private") score -= 25;
   return score;
 }
 
@@ -696,9 +779,7 @@ function shortenDescription(value: string): string {
 }
 
 function buildSelectors(categories: string[]): string[] {
-  if (!categories.length) {
-    return ALL_CATEGORY_KEYS.flatMap((key) => CATEGORY_TAGS[key] ?? []);
-  }
+  if (!categories.length) return OSM_POI_SELECTORS;
   return [...new Set(categories.flatMap((c) => CATEGORY_TAGS[c] ?? []))];
 }
 
@@ -752,6 +833,8 @@ function isExcludedWikidataType(typeLabel: string, typeId = ""): boolean {
   if (EXCLUDED_WIKIDATA_TYPE_IDS.has(typeId)) return true;
   const normalized = typeLabel.toLowerCase();
   if (!normalized) return false;
+  if (/\b(treaty|agreement|conference|convention|historical period|period|era|summit|peace conference)\b/.test(normalized)) return true;
+  if (/\b(department|commune|arrondissement|territorial entity|administrative division|agency|institution|society|parliament|legislature|lower house|upper house|stock exchange|river|hotel|stadium|arena|sports venue)\b/.test(normalized)) return true;
   const englishNoise =
     /\b(city|town|village|municipality|borough|district|county|province|region|metropolitan|administrative|government|airport|aerodrome|event|edition|season|tournament|attack|accident|disaster|organization|organisation|publisher|company|business|human|person|film|song|album|newspaper|periodical|language|university|sports team|football club|transport system|rapid transit|metro system|railway line|empire|commonwealth|historical country|state)\b/;
   const germanNoise =
@@ -783,15 +866,27 @@ function isPlaceholderImage(value: string): boolean {
 }
 
 function isExcludedSightseeingName(name: string): boolean {
+  const orgNoise = /\b(archdiocese|diocese|erzbistum|bistum)\b/i;
+  const conceptNoise = /\b(kaiserreich|agreement|treaty|conference|konferenz|friedenskonferenz|uebereinkommen|übereinkommen|abkommen|vertrag|empire)\b/i;
   const normalized = name.trim();
+  const asciiName = normalizeName(normalized);
+  if (orgNoise.test(normalized)) return true;
+  if (/^\d+(st|nd|rd|th)?\s+street$/i.test(normalized)) return true;
+  if (/\b(college|university|universitaet|universitat|school|schule|hochschule)\b/i.test(asciiName) && !/\b(chapel|museum|gallery|library|bibliothek)\b/i.test(asciiName))
+    return true;
+  if (/\b(college|university|universitaet|universitÃ¤t|school|schule|hochschule)\b/i.test(normalized) && !/\b(chapel|museum|gallery|library|bibliothek)\b/i.test(normalized))
+    return true;
+  if (conceptNoise.test(normalized)) return true;
   if (/^Q\d+$/i.test(normalized)) return true;
   if (/^(city of|greater |groß-|gross )/i.test(normalized)) return true;
   return /\b(airport|flughafen|aeroport|aeropuerto|station|bahnhof|interlingua|commonwealth|weltreich|olympischen winterspiele|subway|underground|skytrain|university|universitaet|universität|nasdaq|hospital|health sciences|clinic)\b/i.test(normalized);
 }
 
 function isExcludedWikipediaDescription(value: unknown): boolean {
+  const conceptNoise = /\b(treaty|agreement|conference|historical period|historical country|diplomatic|political agreement|empire|business district|financial district)\b/;
   const normalized = String(value ?? "").toLowerCase();
   if (!normalized) return false;
+  if (conceptNoise.test(normalized)) return true;
   return /\b(disambiguation|wikimedia list|language|neighbou?rhood|locality|university|organization|organisation|company|event|sports team|football club|railway station|metro station|airport|hospital|clinic)\b/.test(normalized);
 }
 
