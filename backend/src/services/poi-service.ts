@@ -112,19 +112,13 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const cached = POI_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const [osmResult, wikidataResult] = center
-    ? await Promise.allSettled([
-        fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center)),
-        fetchWikidataCandidates(city, center, categories)
-      ])
-    : [
-        { status: "fulfilled", value: await fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center)) } as PromiseFulfilledResult<
-          InternalPoi[]
-        >,
-        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>
-      ];
-  const osmPois = osmResult.status === "fulfilled" ? osmResult.value : [];
-  const wikidataPois = wikidataResult.status === "fulfilled" ? wikidataResult.value : [];
+  const overpassController = new AbortController();
+  const osmPromise = fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center), overpassController.signal);
+  const wikidataPois = center ? await fetchWikidataCandidates(city, center, categories) : [];
+  const osmPois =
+    center && wikidataPois.length >= FALLBACK_READY_COUNT
+      ? await resolveWithin(osmPromise, 1200, []).finally(() => overpassController.abort())
+      : await osmPromise;
   const enrichedPrimaryPois = await enrichWikidataImages(mergePois([...osmPois, ...wikidataPois]).sort(sortByPopularity).slice(0, ENRICHMENT_POOL_LIMIT));
   const primaryPois = mergePois(enrichedPrimaryPois).filter((poi) => isLikelySightseeingPoi(poi, city, center)).sort(sortByPopularity);
   const fallbackPois = center && primaryPois.length < FALLBACK_READY_COUNT ? await fetchFallbackOpenDataPois(city, center, categories) : [];
@@ -144,18 +138,33 @@ async function fetchFallbackOpenDataPois(city: string, center: LatLng, categorie
   return mergePois([...wikipediaSearchPois, ...wikipediaGeoPois]).sort(sortByPopularity);
 }
 
-async function fetchOverpassPois(query: string): Promise<InternalPoi[]> {
+async function fetchOverpassPois(query: string, signal?: AbortSignal): Promise<InternalPoi[]> {
   try {
     const response = await axios.post("https://overpass-api.de/api/interpreter", new URLSearchParams({ data: query }), {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         ...OPEN_DATA_HEADERS
       },
-      timeout: 6500
+      signal,
+      timeout: 9000
     });
     return normalizePois(response.data?.elements ?? []);
   } catch {
     return [];
+  }
+}
+
+async function resolveWithin<T>(promise: Promise<T>, milliseconds: number, fallback: T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.catch(() => fallback),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), milliseconds);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -164,12 +173,12 @@ function buildOverpassQuery(city: string, categories: string[], osmType?: string
   const areaSetup = center ? "" : `${buildAreaSelector(city, osmType, osmId)}->.searchArea;`;
   const searchScope = center ? `(around:${OVERPASS_RADIUS_METERS},${center.lat},${center.lon})` : "(area.searchArea)";
   return `
-  [out:json][timeout:7];
+  [out:json][timeout:10];
   ${areaSetup}
   (
-    ${selectors.map((selector) => `relation[${selector}]${searchScope};`).join("\n")}
-    ${selectors.map((selector) => `way[${selector}]${searchScope};`).join("\n")}
-    ${selectors.map((selector) => `node[${selector}]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `relation[${selector}]["wikidata"]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `way[${selector}]["wikidata"]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `node[${selector}]["wikidata"]${searchScope};`).join("\n")}
   );
   out center tags ${OVERPASS_RESULT_LIMIT};
   `;
@@ -273,7 +282,7 @@ function curatedHighlights(city: string, categories: string[]): InternalPoi[] {
 
 async function fetchWikidataCandidates(city: string, center: LatLng, categories: string[]): Promise<InternalPoi[]> {
   const query = `
-    SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks ?image ?description WHERE {
+    SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks WHERE {
       {
         SELECT ?item (SAMPLE(?rawCoord) AS ?coord) (MAX(?rawSitelinks) AS ?sitelinks) WHERE {
           SERVICE wikibase:around {
@@ -292,11 +301,6 @@ async function fetchWikidataCandidates(city: string, center: LatLng, categories:
         ?item wdt:P31 ?type.
         ?type rdfs:label ?typeLabel.
         FILTER(LANG(?typeLabel) = "en")
-      }
-      OPTIONAL { ?item wdt:P18 ?image. }
-      OPTIONAL {
-        ?item schema:description ?description.
-        FILTER(LANG(?description) IN ("de", "en"))
       }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
     }
@@ -319,8 +323,8 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
         action: "query",
         generator: "geosearch",
         ggscoord: `${center.lat}|${center.lon}`,
-        ggsradius: 10000,
-        ggslimit: 100,
+        ggsradius: 15000,
+        ggslimit: 300,
         prop: "coordinates|description|pageimages|pageprops",
         piprop: "thumbnail",
         pithumbsize: 360,
@@ -338,27 +342,29 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
 }
 
 async function fetchWikipediaSearchPois(city: string, center: LatLng): Promise<InternalPoi[]> {
-  try {
-    const response = await axios.get("https://en.wikipedia.org/w/api.php", {
-      params: {
-        action: "query",
-        generator: "search",
-        gsrsearch: `${city} landmarks tourist attractions`,
-        gsrlimit: 80,
-        prop: "coordinates|description|pageimages|pageprops",
-        piprop: "thumbnail",
-        pithumbsize: 360,
-        redirects: 1,
-        format: "json",
-        origin: "*"
-      },
-      headers: OPEN_DATA_HEADERS,
-      timeout: 3500
-    });
-    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}), city, 15, center, 25);
-  } catch {
-    return [];
-  }
+  const searches = [`${city} tourist attractions`, `${city} landmarks`, `${city} museums parks monuments`];
+  const results = await Promise.allSettled(searches.map((search) => fetchWikipediaSearchQuery(search)));
+  return mergePois(results.flatMap((result) => (result.status === "fulfilled" ? normalizeWikipediaPois(result.value, city, 15, center, 25) : []))).sort(sortByPopularity);
+}
+
+async function fetchWikipediaSearchQuery(search: string): Promise<any[]> {
+  const response = await axios.get("https://en.wikipedia.org/w/api.php", {
+    params: {
+      action: "query",
+      generator: "search",
+      gsrsearch: search,
+      gsrlimit: 80,
+      prop: "coordinates|description|pageimages|pageprops",
+      piprop: "thumbnail",
+      pithumbsize: 360,
+      redirects: 1,
+      format: "json",
+      origin: "*"
+    },
+    headers: OPEN_DATA_HEADERS,
+    timeout: 3500
+  });
+  return Object.values(response.data?.query?.pages ?? {});
 }
 
 function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0, center?: LatLng, maxDistanceKm?: number): InternalPoi[] {
