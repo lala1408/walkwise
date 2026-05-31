@@ -69,16 +69,19 @@ function routeToSegment(route: OsrmRoute | null | undefined): WalkingSegment | n
   const coordinatesList = route?.geometry?.coordinates ?? [];
   if (!route || !Array.isArray(coordinatesList) || coordinatesList.length < 2) return null;
 
+  const polyline: [number, number][] = [];
+  for (const point of coordinatesList) {
+    if (!Array.isArray(point)) continue;
+    const lat = Number(point[1]);
+    const lon = Number(point[0]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) polyline.push([lat, lon]);
+  }
+  if (polyline.length < 2) return null;
+
   return {
     distanceKm: Number(route.distance ?? 0) / 1000,
     durationMinutes: Number(route.duration ?? 0) / 60,
-    polyline: coordinatesList.reduce((points: [number, number][], point: unknown) => {
-      if (!Array.isArray(point)) return points;
-      const lat = Number(point[1]);
-      const lon = Number(point[0]);
-      if (Number.isFinite(lat) && Number.isFinite(lon)) points.push([lat, lon]);
-      return points;
-    }, [] as [number, number][]),
+    polyline,
     isFallback: false
   };
 }
@@ -244,13 +247,15 @@ function scenicFeatureWeight(tags: Record<string, string>): number {
 function routeToLatLngs(route: OsrmRoute | undefined): LatLng[] {
   const coordinates = route?.geometry?.coordinates ?? [];
   if (!Array.isArray(coordinates)) return [];
-  return coordinates.reduce((points: LatLng[], point: unknown) => {
-    if (!Array.isArray(point)) return points;
+
+  const points: LatLng[] = [];
+  for (const point of coordinates) {
+    if (!Array.isArray(point)) continue;
     const lat = Number(point[1]);
     const lon = Number(point[0]);
     if (Number.isFinite(lat) && Number.isFinite(lon)) points.push({ lat, lon });
-    return points;
-  }, [] as LatLng[]);
+  }
+  return points;
 }
 
 function sampleRoutePoints(points: LatLng[]): LatLng[] {
