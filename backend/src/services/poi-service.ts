@@ -2,9 +2,10 @@ import axios from "axios";
 import { LRUCache } from "lru-cache";
 import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
+import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v25";
+const POI_CACHE_VERSION = "wikidata-auto-v26";
 const WIKIDATA_READY_COUNT = 12;
 const OVERPASS_RADIUS_METERS = 18000;
 const OVERPASS_RESULT_LIMIT = 220;
@@ -103,7 +104,7 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
     ? await Promise.allSettled([
         fetchWikidataCandidates(city, center, categories),
         fetchWikipediaGeoPois(city, center),
-        fetchWikipediaSearchPois(city)
+        fetchWikipediaSearchPois(city, center)
       ])
     : [
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
@@ -310,7 +311,7 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
   }
 }
 
-async function fetchWikipediaSearchPois(city: string): Promise<InternalPoi[]> {
+async function fetchWikipediaSearchPois(city: string, center: LatLng): Promise<InternalPoi[]> {
   try {
     const response = await axios.get("https://en.wikipedia.org/w/api.php", {
       params: {
@@ -328,13 +329,13 @@ async function fetchWikipediaSearchPois(city: string): Promise<InternalPoi[]> {
       headers: OPEN_DATA_HEADERS,
       timeout: 3500
     });
-    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}), city, 15);
+    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}), city, 15, center, 25);
   } catch {
     return [];
   }
 }
 
-function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0): InternalPoi[] {
+function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0, center?: LatLng, maxDistanceKm?: number): InternalPoi[] {
   return pages
     .sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0))
     .reduce((pois: InternalPoi[], page, index) => {
@@ -343,6 +344,7 @@ function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0): Int
       const lat = Number(coordinate?.lat);
       const lon = Number(coordinate?.lon);
       if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return pois;
+      if (center && maxDistanceKm && haversineKm(center, { lat, lon }) > maxDistanceKm) return pois;
       if (isSameCityEntity(name, city) || isExcludedSightseeingName(name) || isExcludedWikipediaDescription(page.description)) return pois;
 
       const description = String(page.description ?? "");
