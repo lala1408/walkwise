@@ -14,7 +14,8 @@
     "dev:frontend": "npm run dev --workspace frontend"
   },
   "optionalDependencies": {
-    "@rolldown/binding-linux-x64-gnu": "1.0.2"
+    "@rolldown/binding-linux-x64-gnu": "1.0.2",
+    "lightningcss-linux-x64-gnu": "1.32.0"
   },
   "engines": {
     "node": "22.x"
