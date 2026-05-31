@@ -1,0 +1,695 @@
+.layout {
+  display: grid;
+  grid-template-columns: 320px minmax(380px, 480px) 1fr;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 12px;
+  background: #f3f5f7;
+  color: #182232;
+}
+
+.panel,
+.mapPanel {
+  min-width: 0;
+  background: #fff;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.controlsPanel {
+  align-self: start;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  margin: 22px 0 24px;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+label {
+  font-weight: 500;
+}
+
+input,
+button {
+  border: 1px solid #c5ced8;
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+}
+
+input {
+  width: 100%;
+  background: #fff;
+}
+
+button {
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.buttonLoading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+.cityField {
+  position: relative;
+}
+
+.addressField {
+  position: relative;
+  min-width: 0;
+}
+
+.suggestions {
+  position: absolute;
+  z-index: 1000;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #c5ced8;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
+.suggestion {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px;
+  color: #1f2937;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-radius: 6px;
+}
+
+.suggestion:hover {
+  background: #eef5ff;
+}
+
+.suggestion span {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion.muted {
+  color: #64748b;
+  pointer-events: none;
+}
+
+.addressSuggestions {
+  position: absolute;
+  z-index: 1000;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #c5ced8;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
+.addressSuggestion {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  color: #1f2937;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-radius: 6px;
+}
+
+.addressSuggestion:hover {
+  background: #eef5ff;
+}
+
+.addressSuggestion span {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addressSuggestion.muted {
+  color: #64748b;
+  pointer-events: none;
+}
+
+.selectedCity {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.resultMeta {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.segmentedControl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  background: #eef2f7;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+.segmentedControl button {
+  min-height: 34px;
+  color: #334155;
+  background: transparent;
+  border: 0;
+}
+
+.segmentedControl button.active {
+  color: #fff;
+  background: #2563eb;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  min-height: 34px;
+  background: #eaf0f8;
+  color: #233041;
+}
+
+.chip.active {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.poiPanel {
+  max-height: calc(100vh - 24px);
+}
+
+.poiList {
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.manualPoi {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.manualPoi button {
+  min-width: 104px;
+}
+
+.poiSkeleton {
+  display: grid;
+  grid-template-columns: 128px 1fr;
+  gap: 10px;
+  min-height: 128px;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.poiSkeleton span,
+.poiSkeleton i,
+.poiSkeleton b,
+.poiSkeleton em {
+  display: block;
+  background: linear-gradient(90deg, #eef2f7, #dbe4ef, #eef2f7);
+  background-size: 220% 100%;
+  border-radius: 6px;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+.poiSkeleton span {
+  width: 128px;
+  height: 112px;
+}
+
+.poiSkeleton div {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.poiSkeleton i {
+  width: 74px;
+  height: 24px;
+}
+
+.poiSkeleton b {
+  width: min(220px, 80%);
+  height: 18px;
+}
+
+.poiSkeleton em {
+  width: min(280px, 92%);
+  height: 42px;
+}
+
+.poiCard {
+  display: grid;
+  grid-template-columns: 128px 1fr;
+  gap: 10px;
+  min-height: 128px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+}
+
+.poiCard.selected {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.poiCard.active {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.22);
+}
+
+.poiCard img {
+  width: 128px;
+  height: 112px;
+  object-fit: cover;
+  background: #e2e8f0;
+  border-radius: 6px;
+}
+
+.poiContent {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+.poiMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.categoryBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  color: #075985;
+  font-size: 12px;
+  font-weight: 700;
+  background: #e0f2fe;
+  border-radius: 999px;
+}
+
+.selectPoi {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: #334155;
+  font-size: 12px;
+}
+
+.selectPoi input {
+  width: 16px;
+  height: 16px;
+}
+
+.poiContent h3 {
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.poiContent p {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.mapPanel {
+  display: grid;
+  grid-template-rows: minmax(420px, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+}
+
+.map {
+  min-height: 65vh;
+  border-radius: 6px;
+}
+
+.poiMarker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 50% 50% 50% 0;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.35);
+  transform: rotate(-45deg);
+}
+
+.poiMarker.blue {
+  background: #2563eb;
+}
+
+.poiMarker.green {
+  background: #16a34a;
+}
+
+.poiMarker.muted {
+  opacity: 0.42;
+  transform: rotate(-45deg) scale(0.86);
+}
+
+.poiMarker.active {
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.42), 0 4px 10px rgba(15, 23, 42, 0.35);
+}
+
+.poiMarker span {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border-radius: 999px;
+  transform: rotate(45deg);
+}
+
+.routeNumberMarker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  background: #16a34a;
+  border: 2px solid #fff;
+  border-radius: 50% 50% 50% 0;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.35);
+  transform: rotate(-45deg);
+}
+
+.routeNumberMarker::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.routeNumberMarker span {
+  position: relative;
+  z-index: 1;
+  line-height: 1;
+  transform: rotate(45deg);
+}
+
+.routeNumberMarker.active {
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.42), 0 4px 10px rgba(15, 23, 42, 0.35);
+}
+
+.endpointMarker {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.35);
+}
+
+.endpointMarker.start {
+  background: #0f766e;
+}
+
+.endpointMarker.end {
+  background: #dc2626;
+}
+
+.routeInfo {
+  max-height: 28vh;
+  overflow: auto;
+}
+
+.routeInfo p {
+  margin-top: 6px;
+  color: #475569;
+}
+
+.routeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.routeActions button {
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+.routeActions span {
+  color: #16a34a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.routeStopList {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routeStopList li {
+  display: grid;
+  grid-template-columns: 22px 30px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.dragHandle {
+  color: #94a3b8;
+  cursor: grab;
+  line-height: 1;
+}
+
+.routeStopNumber {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  background: #16a34a;
+  border-radius: 999px;
+}
+
+.routeMoveButtons {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.routeMoveButtons button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #334155;
+  background: #fff;
+}
+
+.routeMoveButtons button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+body.printRoute {
+  background: #fff;
+}
+
+body.printRoute .layout {
+  display: block;
+  min-height: auto;
+  padding: 0;
+  background: #fff;
+}
+
+body.printRoute .controlsPanel,
+body.printRoute .poiPanel,
+body.printRoute .routeActions,
+body.printRoute .routeMoveButtons,
+body.printRoute .dragHandle,
+body.printRoute .leaflet-control-container {
+  display: none !important;
+}
+
+body.printRoute .mapPanel {
+  display: block;
+  padding: 0;
+  border: 0;
+}
+
+body.printRoute .map {
+  height: 540px !important;
+  min-height: 540px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+}
+
+body.printRoute .routeInfo {
+  max-height: none;
+  margin-top: 18px;
+  overflow: visible;
+}
+
+body.printRoute .routeStopList li {
+  grid-template-columns: 30px minmax(0, 1fr);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+@media (max-width: 1180px) {
+  .layout {
+    grid-template-columns: 340px 1fr;
+  }
+
+  .mapPanel {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .poiCard {
+    grid-template-columns: 96px 1fr;
+  }
+
+  .poiCard img {
+    width: 96px;
+    height: 104px;
+  }
+
+  .poiSkeleton {
+    grid-template-columns: 96px 1fr;
+  }
+
+  .poiSkeleton span {
+    width: 96px;
+    height: 104px;
+  }
+
+  .map {
+    min-height: 50vh;
+  }
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  body.printRoute .map {
+    height: 145mm !important;
+    min-height: 145mm;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
