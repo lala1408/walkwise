@@ -1,6 +1,7 @@
 import axios from "axios";
 import { LRUCache } from "lru-cache";
 import type { LatLng, Poi } from "../types.js";
+import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
 const POI_CACHE_VERSION = "wikidata-auto-v11";
@@ -98,7 +99,7 @@ async function fetchOverpassPois(query: string): Promise<InternalPoi[]> {
     const response = await axios.post("https://overpass-api.de/api/interpreter", new URLSearchParams({ data: query }), {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "walking-route-planner/0.1 (local development)"
+        ...OPEN_DATA_HEADERS
       },
       timeout: 5000
     });
@@ -361,7 +362,7 @@ async function requestWikidata(query: string, timeout: number) {
       params: { query, format: "json" },
       headers: {
         Accept: "application/sparql-results+json",
-        "User-Agent": "walking-route-planner/0.1 (local development)"
+        ...OPEN_DATA_HEADERS
       },
       timeout
     });
@@ -371,7 +372,7 @@ async function requestWikidata(query: string, timeout: number) {
         headers: {
           Accept: "application/sparql-results+json",
           "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "walking-route-planner/0.1 (local development)"
+          ...OPEN_DATA_HEADERS
         },
         timeout
       });

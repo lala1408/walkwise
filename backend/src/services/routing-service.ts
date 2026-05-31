@@ -2,6 +2,7 @@ import axios from "axios";
 import { LRUCache } from "lru-cache";
 import { haversineKm, walkMinutesForKm } from "./geo.js";
 import type { LatLng } from "../types.js";
+import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 export type WalkingSegment = {
   distanceKm: number;
@@ -28,9 +29,7 @@ export async function getWalkingSegment(from: LatLng, to: LatLng, preference: "f
         steps: false,
         alternatives: preference === "beautiful"
       },
-      headers: {
-        "User-Agent": "walking-route-planner/0.1 (local development)"
-      },
+      headers: OPEN_DATA_HEADERS,
       timeout: 8000
     });
     const routes = response.data?.routes ?? [];

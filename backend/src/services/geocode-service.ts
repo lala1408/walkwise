@@ -1,6 +1,7 @@
 import axios from "axios";
 import { LRUCache } from "lru-cache";
 import type { AddressSuggestion, LatLng } from "../types.js";
+import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const GEOCODE_CACHE = new LRUCache<string, AddressSuggestion[]>({ max: 300, ttl: 1000 * 60 * 60 * 24 });
 
@@ -22,9 +23,7 @@ export async function geocodeAddress(query: string, city?: string, center?: LatL
       bounded: center ? 1 : undefined,
       viewbox: center ? buildViewbox(center) : undefined
     },
-    headers: {
-      "User-Agent": "walking-route-planner/0.1 (local development)"
-    },
+    headers: OPEN_DATA_HEADERS,
     timeout: 8000
   });
 
