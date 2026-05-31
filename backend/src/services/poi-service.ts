@@ -4,8 +4,8 @@ import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v23";
-const WIKIDATA_READY_COUNT = 30;
+const POI_CACHE_VERSION = "wikidata-auto-v25";
+const WIKIDATA_READY_COUNT = 12;
 const OVERPASS_RADIUS_METERS = 18000;
 const OVERPASS_RESULT_LIMIT = 220;
 type InternalPoi = Poi & { wikidataId?: string; hasCustomDescription: boolean; popularityScore: number };
@@ -99,15 +99,21 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const cached = POI_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const [wikidataResult, wikipediaResult] = center
-    ? await Promise.allSettled([fetchWikidataCandidates(city, center, categories), fetchWikipediaGeoPois(city, center)])
+  const [wikidataResult, wikipediaGeoResult, wikipediaSearchResult] = center
+    ? await Promise.allSettled([
+        fetchWikidataCandidates(city, center, categories),
+        fetchWikipediaGeoPois(city, center),
+        fetchWikipediaSearchPois(city)
+      ])
     : [
+        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>
       ];
   const wikidataPois = wikidataResult.status === "fulfilled" ? wikidataResult.value : [];
-  const wikipediaPois = wikipediaResult.status === "fulfilled" ? wikipediaResult.value : [];
-  const openDataPois = mergePois([...wikidataPois, ...wikipediaPois]).sort(sortByPopularity);
+  const wikipediaGeoPois = wikipediaGeoResult.status === "fulfilled" ? wikipediaGeoResult.value : [];
+  const wikipediaSearchPois = wikipediaSearchResult.status === "fulfilled" ? wikipediaSearchResult.value : [];
+  const openDataPois = mergePois([...wikidataPois, ...wikipediaSearchPois, ...wikipediaGeoPois]).sort(sortByPopularity);
   const osmPois =
     openDataPois.length >= WIKIDATA_READY_COUNT ? [] : await fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center));
   const merged = mergePois([...openDataPois, ...osmPois]).sort(sortByPopularity).slice(0, 50);
@@ -304,7 +310,31 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
   }
 }
 
-function normalizeWikipediaPois(pages: any[], city: string): InternalPoi[] {
+async function fetchWikipediaSearchPois(city: string): Promise<InternalPoi[]> {
+  try {
+    const response = await axios.get("https://en.wikipedia.org/w/api.php", {
+      params: {
+        action: "query",
+        generator: "search",
+        gsrsearch: `${city} landmarks tourist attractions`,
+        gsrlimit: 80,
+        prop: "coordinates|description|pageimages|pageprops",
+        piprop: "thumbnail",
+        pithumbsize: 360,
+        redirects: 1,
+        format: "json",
+        origin: "*"
+      },
+      headers: OPEN_DATA_HEADERS,
+      timeout: 3500
+    });
+    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}), city, 15);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0): InternalPoi[] {
   return pages
     .sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0))
     .reduce((pois: InternalPoi[], page, index) => {
@@ -326,7 +356,7 @@ function normalizeWikipediaPois(pages: any[], city: string): InternalPoi[] {
         imageUrl: String(page.thumbnail?.source ?? "") || buildImageUrl({}, name),
         wikidataId: wikidataId || undefined,
         hasCustomDescription: isUsefulDescription(description),
-        popularityScore: 105 - Math.min(index, 50) + (page.thumbnail?.source ? 20 : 0) + (wikidataId ? 10 : 0),
+        popularityScore: 105 + scoreBoost - Math.min(index, 70) + (page.thumbnail?.source ? 20 : 0) + (wikidataId ? 10 : 0),
         location: { lat, lon },
         priority: index < 10 ? 4 : 3
       });
