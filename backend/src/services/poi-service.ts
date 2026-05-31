@@ -4,9 +4,34 @@ import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v12";
+const POI_CACHE_VERSION = "wikidata-auto-v21";
+const WIKIDATA_READY_COUNT = 30;
+const OVERPASS_RADIUS_METERS = 18000;
+const OVERPASS_RESULT_LIMIT = 220;
 type InternalPoi = Poi & { wikidataId?: string; hasCustomDescription: boolean; popularityScore: number };
 type WikidataTypeCategory = { id: string; category: string };
+const EXCLUDED_WIKIDATA_TYPE_IDS = new Set([
+  "Q515",
+  "Q174844",
+  "Q200250",
+  "Q208511",
+  "Q1093829",
+  "Q1549591",
+  "Q2264924",
+  "Q15063611",
+  "Q51929311",
+  "Q1066984",
+  "Q108178728",
+  "Q33215",
+  "Q838296",
+  "Q3918",
+  "Q1126006",
+  "Q1790360",
+  "Q2578692",
+  "Q137290726",
+  "Q476028",
+  "Q12973014"
+]);
 
 const CATEGORY_TAGS: Record<string, string[]> = {
   museum: ['tourism="museum"'],
@@ -74,26 +99,18 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const cached = POI_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const selectors = buildSelectors(categories);
-  const areaSelector = buildAreaSelector(city, osmType, osmId);
-  const query = `
-  [out:json][timeout:25];
-  ${areaSelector}->.searchArea;
-  (
-    ${selectors.map((s) => `node[${s}](area.searchArea);`).join("\n")}
-    ${selectors.map((s) => `way[${s}](area.searchArea);`).join("\n")}
-    ${shouldFetchRelations(categories) ? selectors.map((s) => `relation[${s}](area.searchArea);`).join("\n") : ""}
-  );
-  out center tags;
-  `;
-
-  const [osmResult, wikidataResult] = await Promise.allSettled([
-    fetchOverpassPois(query),
-    center ? fetchWikidataCandidates(center, categories) : Promise.resolve([])
-  ]);
-  const osmPois = osmResult.status === "fulfilled" ? osmResult.value : [];
+  const [wikidataResult, wikipediaResult] = center
+    ? await Promise.allSettled([fetchWikidataCandidates(center, categories), fetchWikipediaGeoPois(center)])
+    : [
+        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
+        { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>
+      ];
   const wikidataPois = wikidataResult.status === "fulfilled" ? wikidataResult.value : [];
-  const merged = mergePois([...wikidataPois, ...osmPois]).sort(sortByPopularity).slice(0, 50);
+  const wikipediaPois = wikipediaResult.status === "fulfilled" ? wikipediaResult.value : [];
+  const openDataPois = mergePois([...wikidataPois, ...wikipediaPois]).sort(sortByPopularity);
+  const osmPois =
+    openDataPois.length >= WIKIDATA_READY_COUNT ? [] : await fetchOverpassPois(buildOverpassQuery(city, categories, osmType, osmId, center));
+  const merged = mergePois([...openDataPois, ...osmPois]).sort(sortByPopularity).slice(0, 50);
   const needsEnrichment = merged.some((poi) => poi.wikidataId && (isPlaceholderImage(poi.imageUrl) || !poi.hasCustomDescription));
   const pois = stripInternalPoiFields(needsEnrichment ? await enrichWikidataImages(merged) : merged);
   if (pois.length) POI_CACHE.set(cacheKey, pois);
@@ -107,12 +124,28 @@ async function fetchOverpassPois(query: string): Promise<InternalPoi[]> {
         "Content-Type": "application/x-www-form-urlencoded",
         ...OPEN_DATA_HEADERS
       },
-      timeout: 5000
+      timeout: 4500
     });
     return normalizePois(response.data?.elements ?? []);
   } catch {
     return [];
   }
+}
+
+function buildOverpassQuery(city: string, categories: string[], osmType?: string, osmId?: number, center?: LatLng): string {
+  const selectors = buildSelectors(categories);
+  const areaSetup = center ? "" : `${buildAreaSelector(city, osmType, osmId)}->.searchArea;`;
+  const searchScope = center ? `(around:${OVERPASS_RADIUS_METERS},${center.lat},${center.lon})` : "(area.searchArea)";
+  return `
+  [out:json][timeout:8];
+  ${areaSetup}
+  (
+    ${selectors.map((selector) => `node[${selector}]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `way[${selector}]${searchScope};`).join("\n")}
+    ${selectors.map((selector) => `relation[${selector}]${searchScope};`).join("\n")}
+  );
+  out center tags ${OVERPASS_RESULT_LIMIT};
+  `;
 }
 
 function buildAreaSelector(city: string, osmType?: string, osmId?: number): string {
@@ -211,49 +244,109 @@ function curatedHighlights(city: string, categories: string[]): InternalPoi[] {
 }
 
 async function fetchWikidataCandidates(center: LatLng, categories: string[]): Promise<InternalPoi[]> {
-  const selectedTypes = wikidataTypesForCategories(categories);
-  if (!selectedTypes.length) return [];
-
-  const values = selectedTypes.map((type) => `wd:${type.id}`).join(" ");
   const query = `
-    SELECT ?item ?itemLabel ?type ?coord ?image ?description ?sitelinks WHERE {
+    SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks WHERE {
       {
-        SELECT ?item (SAMPLE(?rawType) AS ?type) (SAMPLE(?rawCoord) AS ?coord) (MAX(?rawSitelinks) AS ?sitelinks) WHERE {
+        SELECT ?item (SAMPLE(?rawCoord) AS ?coord) (MAX(?rawSitelinks) AS ?sitelinks) WHERE {
           SERVICE wikibase:around {
             ?item wdt:P625 ?rawCoord.
             bd:serviceParam wikibase:center "Point(${center.lon} ${center.lat})"^^geo:wktLiteral.
             bd:serviceParam wikibase:radius "16".
           }
-          ?item wdt:P31/wdt:P279* ?rawType.
-          VALUES ?rawType { ${values} }
           ?item wikibase:sitelinks ?rawSitelinks.
-          FILTER(?rawSitelinks >= 4)
+          FILTER(?rawSitelinks >= 5)
         }
         GROUP BY ?item
         ORDER BY DESC(?sitelinks)
-        LIMIT 260
+        LIMIT 320
       }
-      OPTIONAL { ?item wdt:P18 ?image. }
       OPTIONAL {
-        ?item schema:description ?description.
-        FILTER(LANG(?description) IN ("de", "en"))
+        ?item wdt:P31 ?type.
+        ?type rdfs:label ?typeLabel.
+        FILTER(LANG(?typeLabel) = "en")
       }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
     }
     ORDER BY DESC(?sitelinks)
-    LIMIT 520
+    LIMIT 700
   `;
 
   try {
-    const response = await requestWikidata(query, 15000);
-    return normalizeWikidataPois(response.data?.results?.bindings ?? []);
+    const response = await requestWikidata(query, 4000, false);
+    return normalizeWikidataPois(response.data?.results?.bindings ?? [], categories);
   } catch {
     return [];
   }
 }
 
-function normalizeWikidataPois(bindings: any[]): InternalPoi[] {
-  const byId = new Map<string, InternalPoi>();
+async function fetchWikipediaGeoPois(center: LatLng): Promise<InternalPoi[]> {
+  try {
+    const response = await axios.get("https://en.wikipedia.org/w/api.php", {
+      params: {
+        action: "query",
+        generator: "geosearch",
+        ggscoord: `${center.lat}|${center.lon}`,
+        ggsradius: 10000,
+        ggslimit: 50,
+        prop: "coordinates|description|pageimages|pageprops",
+        piprop: "thumbnail",
+        pithumbsize: 360,
+        redirects: 1,
+        format: "json",
+        origin: "*"
+      },
+      headers: OPEN_DATA_HEADERS,
+      timeout: 3500
+    });
+    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeWikipediaPois(pages: any[]): InternalPoi[] {
+  return pages
+    .sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0))
+    .reduce((pois: InternalPoi[], page, index) => {
+      const name = String(page.title ?? "").trim();
+      const coordinate = page.coordinates?.[0];
+      const lat = Number(coordinate?.lat);
+      const lon = Number(coordinate?.lon);
+      if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return pois;
+      if (isExcludedSightseeingName(name) || isExcludedWikipediaDescription(page.description)) return pois;
+
+      const description = String(page.description ?? "");
+      const category = categoryFromText(`${name} ${description}`);
+      const wikidataId = String(page.pageprops?.wikibase_item ?? "");
+      pois.push({
+        id: `wikipedia/${page.pageid}`,
+        name,
+        category,
+        description: buildPoiSummary(name, category, description),
+        imageUrl: String(page.thumbnail?.source ?? "") || buildImageUrl({}, name),
+        wikidataId: wikidataId || undefined,
+        hasCustomDescription: isUsefulDescription(description),
+        popularityScore: 105 - Math.min(index, 50) + (page.thumbnail?.source ? 20 : 0) + (wikidataId ? 10 : 0),
+        location: { lat, lon },
+        priority: index < 10 ? 4 : 3
+      });
+      return pois;
+    }, []);
+}
+
+function normalizeWikidataPois(bindings: any[], categories: string[] = []): InternalPoi[] {
+  const grouped = new Map<
+    string,
+    {
+      name: string;
+      coord: LatLng;
+      sitelinks: number;
+      image: string;
+      description: string;
+      types: { id: string; label: string }[];
+    }
+  >();
+  const wantsAllCategories = categories.length === 0;
   for (const binding of bindings) {
     const wikidataId = String(binding.item?.value ?? "").split("/").pop();
     const name = String(binding.itemLabel?.value ?? "").trim();
@@ -262,27 +355,50 @@ function normalizeWikidataPois(bindings: any[]): InternalPoi[] {
     if (isExcludedSightseeingName(name)) continue;
 
     const typeId = String(binding.type?.value ?? "").split("/").pop() ?? "";
-    const category = categoryForWikidataType(typeId);
+    const typeLabel = String(binding.typeLabel?.value ?? "");
     const sitelinks = Number(binding.sitelinks?.value ?? 0);
     const description = String(binding.description?.value ?? "");
     const image = String(binding.image?.value ?? "");
-    const candidate: InternalPoi = {
-      id: `wikidata/${wikidataId}`,
-      name,
-      category,
-      description: buildPoiSummary(name, category, description),
-      imageUrl: image || buildImageUrl({}, name),
-      wikidataId,
-      hasCustomDescription: isUsefulDescription(description),
-      popularityScore: 120 + Math.min(sitelinks, 1000) / 3 + (image ? 30 : 0),
-      location: coord,
-      priority: sitelinks > 150 ? 5 : sitelinks > 50 ? 4 : 3
-    };
-
-    const existing = byId.get(wikidataId);
-    if (!existing || candidate.popularityScore > existing.popularityScore) byId.set(wikidataId, candidate);
+    const existing = grouped.get(wikidataId);
+    const target =
+      existing ??
+      {
+        name,
+        coord,
+        sitelinks,
+        image,
+        description,
+        types: []
+      };
+    target.sitelinks = Math.max(target.sitelinks, Number.isFinite(sitelinks) ? sitelinks : 0);
+    if (!target.image && image) target.image = image;
+    if (!target.description && description) target.description = description;
+    if (typeId || typeLabel) target.types.push({ id: typeId, label: typeLabel });
+    grouped.set(wikidataId, target);
   }
-  return [...byId.values()];
+
+  const pois: InternalPoi[] = [];
+  for (const [wikidataId, item] of grouped) {
+    const usableTypes = item.types.filter((type) => !isExcludedWikidataType(type.label, type.id));
+    if (item.types.length > 0 && usableTypes.length === 0) continue;
+
+    const selectedType = chooseBestWikidataType(usableTypes);
+    const category = categoryForWikidataType(selectedType.id, selectedType.label);
+    if (!wantsAllCategories && !categories.includes(category)) continue;
+    pois.push({
+      id: `wikidata/${wikidataId}`,
+      name: item.name,
+      category,
+      description: buildPoiSummary(item.name, category, item.description),
+      imageUrl: item.image || buildImageUrl({}, item.name),
+      wikidataId,
+      hasCustomDescription: isUsefulDescription(item.description),
+      popularityScore: 120 + Math.min(item.sitelinks, 1000) / 3 + (item.image ? 30 : 0),
+      location: item.coord,
+      priority: item.sitelinks > 150 ? 5 : item.sitelinks > 50 ? 4 : 3
+    });
+  }
+  return pois;
 }
 
 function mergePois(pois: InternalPoi[]): InternalPoi[] {
@@ -369,7 +485,7 @@ async function enrichWikidataImages(pois: InternalPoi[]): Promise<InternalPoi[]>
   }
 }
 
-async function requestWikidata(query: string, timeout: number) {
+async function requestWikidata(query: string, timeout: number, retryWithPost = true) {
   try {
     return await axios.get("https://query.wikidata.org/sparql", {
       params: { query, format: "json" },
@@ -380,6 +496,7 @@ async function requestWikidata(query: string, timeout: number) {
       timeout
     });
   } catch (getError) {
+    if (!retryWithPost) throw getError;
     try {
       return await axios.post("https://query.wikidata.org/sparql", new URLSearchParams({ query, format: "json" }), {
         headers: {
@@ -561,8 +678,52 @@ function wikidataTypesForCategories(categories: string[]): WikidataTypeCategory[
   return WIKIDATA_TYPES.filter((type) => categories.includes(type.category));
 }
 
-function categoryForWikidataType(typeId: string): string {
-  return WIKIDATA_TYPES.find((type) => type.id === typeId)?.category ?? "landmark";
+function categoryForWikidataType(typeId: string, typeLabel = ""): string {
+  const exact = WIKIDATA_TYPES.find((type) => type.id === typeId)?.category;
+  if (exact) return exact;
+  const normalized = typeLabel.toLowerCase();
+  if (/\b(museum|gallery)\b/.test(normalized)) return normalized.includes("gallery") ? "gallery" : "museum";
+  if (/\b(church|cathedral|chapel|synagogue|mosque|temple)\b/.test(normalized)) return "church";
+  if (/\b(park|garden|conservatory|arboretum|greenway|seawall)\b/.test(normalized)) return "park";
+  if (/\b(square|plaza)\b/.test(normalized)) return "square";
+  if (/\b(monument|memorial)\b/.test(normalized)) return normalized.includes("memorial") ? "memorial" : "monument";
+  if (/\b(castle|palace|fort)\b/.test(normalized)) return "castle";
+  if (/\b(view|lookout|observation|tower)\b/.test(normalized)) return "viewpoint";
+  if (/\b(bridge|building|skyscraper|library|theatre|theater|opera|station|hotel|hall|campus)\b/.test(normalized)) return "architecture";
+  return "landmark";
+}
+
+function categoryFromText(value: string): string {
+  const normalized = value.toLowerCase();
+  if (/\b(museum|gallery)\b/.test(normalized)) return normalized.includes("gallery") ? "gallery" : "museum";
+  if (/\b(church|cathedral|chapel|synagogue|mosque|temple|abbey)\b/.test(normalized)) return "church";
+  if (/\b(park|garden|conservatory|arboretum|greenway)\b/.test(normalized)) return "park";
+  if (/\b(square|plaza)\b/.test(normalized)) return "square";
+  if (/\b(monument|memorial)\b/.test(normalized)) return normalized.includes("memorial") ? "memorial" : "monument";
+  if (/\b(castle|palace|fort|tower)\b/.test(normalized)) return normalized.includes("tower") ? "viewpoint" : "castle";
+  if (/\b(bridge|building|skyscraper|library|theatre|theater|opera|hall)\b/.test(normalized)) return "architecture";
+  return "landmark";
+}
+
+function chooseBestWikidataType(types: { id: string; label: string }[]): { id: string; label: string } {
+  const fallback = { id: "", label: "" };
+  if (!types.length) return fallback;
+  return (
+    types.find((type) => categoryForWikidataType(type.id, type.label) !== "landmark") ??
+    types.find((type) => WIKIDATA_TYPES.some((knownType) => knownType.id === type.id)) ??
+    types[0]
+  );
+}
+
+function isExcludedWikidataType(typeLabel: string, typeId = ""): boolean {
+  if (EXCLUDED_WIKIDATA_TYPE_IDS.has(typeId)) return true;
+  const normalized = typeLabel.toLowerCase();
+  if (!normalized) return false;
+  const englishNoise =
+    /\b(city|town|village|municipality|borough|district|county|province|region|metropolitan|administrative|government|airport|aerodrome|event|edition|season|tournament|attack|accident|disaster|organization|organisation|publisher|company|business|human|person|film|song|album|newspaper|periodical|language|university|sports team|football club|transport system|rapid transit|metro system|railway line|empire|commonwealth|historical country|state)\b/;
+  const germanNoise =
+    /\b(stadt|großstadt|gemeinde|bezirk|landkreis|provinz|region|metropole|verwaltung|regierung|flughafen|flugplatz|ereignis|veranstaltung|saison|turnier|anschlag|unfall|katastrophe|unternehmen|mensch|person|lied|zeitung|zeitschrift|sprache|universitaet|universität|hochschule|sportmannschaft|fußballverein|fussballverein|verkehrssystem|schnellbahn|u-bahn|bahnstrecke|staat|königreich|koenigreich|reich)\b/;
+  return englishNoise.test(normalized) || germanNoise.test(normalized);
 }
 
 function parseWikidataPoint(value: string): LatLng | null {
@@ -588,7 +749,16 @@ function isPlaceholderImage(value: string): boolean {
 }
 
 function isExcludedSightseeingName(name: string): boolean {
-  return /\b(airport|flughafen|aeroport|aeropuerto|station|bahnhof)\b/i.test(name);
+  const normalized = name.trim();
+  if (/^Q\d+$/i.test(normalized)) return true;
+  if (/^(city of|greater |groß-|gross )/i.test(normalized)) return true;
+  return /\b(airport|flughafen|aeroport|aeropuerto|station|bahnhof|interlingua|commonwealth|weltreich|olympischen winterspiele|subway|underground|skytrain|university|universitaet|universität|nasdaq|hospital|health sciences|clinic)\b/i.test(normalized);
+}
+
+function isExcludedWikipediaDescription(value: unknown): boolean {
+  const normalized = String(value ?? "").toLowerCase();
+  if (!normalized) return false;
+  return /\b(disambiguation|wikimedia list|language|city|borough|district|municipality|neighbou?rhood|locality|administrative|university|organization|organisation|company|event|sports team|football club|railway station|metro station|airport|hospital|clinic)\b/.test(normalized);
 }
 
 function buildDescriptionForCategory(category: string): string {
