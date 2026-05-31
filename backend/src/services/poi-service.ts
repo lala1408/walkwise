@@ -4,7 +4,7 @@ import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v21";
+const POI_CACHE_VERSION = "wikidata-auto-v22";
 const WIKIDATA_READY_COUNT = 30;
 const OVERPASS_RADIUS_METERS = 18000;
 const OVERPASS_RESULT_LIMIT = 220;
@@ -100,7 +100,7 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   if (cached) return cached;
 
   const [wikidataResult, wikipediaResult] = center
-    ? await Promise.allSettled([fetchWikidataCandidates(center, categories), fetchWikipediaGeoPois(center)])
+    ? await Promise.allSettled([fetchWikidataCandidates(city, center, categories), fetchWikipediaGeoPois(city, center)])
     : [
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>,
         { status: "fulfilled", value: [] } as PromiseFulfilledResult<InternalPoi[]>
@@ -243,7 +243,7 @@ function curatedHighlights(city: string, categories: string[]): InternalPoi[] {
   return highlights.filter((poi) => matchesCategory(poi.category));
 }
 
-async function fetchWikidataCandidates(center: LatLng, categories: string[]): Promise<InternalPoi[]> {
+async function fetchWikidataCandidates(city: string, center: LatLng, categories: string[]): Promise<InternalPoi[]> {
   const query = `
     SELECT ?item ?itemLabel ?type ?typeLabel ?coord ?sitelinks WHERE {
       {
@@ -273,13 +273,13 @@ async function fetchWikidataCandidates(center: LatLng, categories: string[]): Pr
 
   try {
     const response = await requestWikidata(query, 4000, false);
-    return normalizeWikidataPois(response.data?.results?.bindings ?? [], categories);
+    return normalizeWikidataPois(response.data?.results?.bindings ?? [], categories, city);
   } catch {
     return [];
   }
 }
 
-async function fetchWikipediaGeoPois(center: LatLng): Promise<InternalPoi[]> {
+async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<InternalPoi[]> {
   try {
     const response = await axios.get("https://en.wikipedia.org/w/api.php", {
       params: {
@@ -298,13 +298,13 @@ async function fetchWikipediaGeoPois(center: LatLng): Promise<InternalPoi[]> {
       headers: OPEN_DATA_HEADERS,
       timeout: 3500
     });
-    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}));
+    return normalizeWikipediaPois(Object.values(response.data?.query?.pages ?? {}), city);
   } catch {
     return [];
   }
 }
 
-function normalizeWikipediaPois(pages: any[]): InternalPoi[] {
+function normalizeWikipediaPois(pages: any[], city: string): InternalPoi[] {
   return pages
     .sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0))
     .reduce((pois: InternalPoi[], page, index) => {
@@ -313,7 +313,7 @@ function normalizeWikipediaPois(pages: any[]): InternalPoi[] {
       const lat = Number(coordinate?.lat);
       const lon = Number(coordinate?.lon);
       if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return pois;
-      if (isExcludedSightseeingName(name) || isExcludedWikipediaDescription(page.description)) return pois;
+      if (isSameCityEntity(name, city) || isExcludedSightseeingName(name) || isExcludedWikipediaDescription(page.description)) return pois;
 
       const description = String(page.description ?? "");
       const category = categoryFromText(`${name} ${description}`);
@@ -334,7 +334,7 @@ function normalizeWikipediaPois(pages: any[]): InternalPoi[] {
     }, []);
 }
 
-function normalizeWikidataPois(bindings: any[], categories: string[] = []): InternalPoi[] {
+function normalizeWikidataPois(bindings: any[], categories: string[] = [], city = ""): InternalPoi[] {
   const grouped = new Map<
     string,
     {
@@ -352,6 +352,7 @@ function normalizeWikidataPois(bindings: any[], categories: string[] = []): Inte
     const name = String(binding.itemLabel?.value ?? "").trim();
     const coord = parseWikidataPoint(String(binding.coord?.value ?? ""));
     if (!wikidataId || !name || !coord) continue;
+    if (isSameCityEntity(name, city)) continue;
     if (isExcludedSightseeingName(name)) continue;
 
     const typeId = String(binding.type?.value ?? "").split("/").pop() ?? "";
@@ -739,6 +740,7 @@ function normalizeName(value: string): string {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ß/g, "ss")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -758,7 +760,21 @@ function isExcludedSightseeingName(name: string): boolean {
 function isExcludedWikipediaDescription(value: unknown): boolean {
   const normalized = String(value ?? "").toLowerCase();
   if (!normalized) return false;
-  return /\b(disambiguation|wikimedia list|language|city|borough|district|municipality|neighbou?rhood|locality|administrative|university|organization|organisation|company|event|sports team|football club|railway station|metro station|airport|hospital|clinic)\b/.test(normalized);
+  return /\b(disambiguation|wikimedia list|language|neighbou?rhood|locality|university|organization|organisation|company|event|sports team|football club|railway station|metro station|airport|hospital|clinic)\b/.test(normalized);
+}
+
+function isSameCityEntity(name: string, city: string): boolean {
+  if (!city) return false;
+  const normalizedName = normalizeName(name);
+  const normalizedCity = normalizeName(city);
+  return (
+    normalizedName === normalizedCity ||
+    normalizedName === `${normalizedCity} city` ||
+    normalizedName === `city of ${normalizedCity}` ||
+    normalizedName === `central ${normalizedCity}` ||
+    normalizedName === `greater ${normalizedCity}` ||
+    normalizedName === `gross ${normalizedCity}`
+  );
 }
 
 function buildDescriptionForCategory(category: string): string {
