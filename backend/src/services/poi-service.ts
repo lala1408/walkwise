@@ -5,7 +5,7 @@ import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "poi-first-v28";
+const POI_CACHE_VERSION = "poi-first-v29";
 const FALLBACK_READY_COUNT = 18;
 const TARGET_POI_COUNT = 50;
 const ENRICHMENT_POOL_LIMIT = 260;
