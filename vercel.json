@@ -6,6 +6,9 @@
   "functions": {
     "api/[...path].ts": {
       "maxDuration": 30
+    },
+    "api/route/plan.ts": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
