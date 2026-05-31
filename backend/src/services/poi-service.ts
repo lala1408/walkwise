@@ -5,8 +5,8 @@ import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v26";
-const WIKIDATA_READY_COUNT = 12;
+const POI_CACHE_VERSION = "wikidata-auto-v27";
+const WIKIDATA_READY_COUNT = 8;
 const OVERPASS_RADIUS_METERS = 18000;
 const OVERPASS_RESULT_LIMIT = 220;
 type InternalPoi = Poi & { wikidataId?: string; hasCustomDescription: boolean; popularityScore: number };
