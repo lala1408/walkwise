@@ -4,21 +4,21 @@ import type { LatLng, Poi } from "../types.js";
 import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "wikidata-auto-v11";
+const POI_CACHE_VERSION = "wikidata-auto-v12";
 type InternalPoi = Poi & { wikidataId?: string; hasCustomDescription: boolean; popularityScore: number };
 type WikidataTypeCategory = { id: string; category: string };
 
 const CATEGORY_TAGS: Record<string, string[]> = {
   museum: ['tourism="museum"'],
   gallery: ['tourism="gallery"'],
-  landmark: ['tourism="attraction"'],
-  viewpoint: ['tourism="viewpoint"'],
+  landmark: ['tourism="attraction"', 'tourism="artwork"', 'tourism="zoo"', 'tourism="aquarium"', 'tourism="theme_park"'],
+  viewpoint: ['tourism="viewpoint"', 'man_made="tower"'],
   monument: ['historic="monument"'],
   memorial: ['historic="memorial"'],
   castle: ['historic="castle"'],
   church: ['building="cathedral"', 'building="church"', 'amenity="place_of_worship"'],
   square: ['place="square"'],
-  park: ['leisure="park"', 'leisure="garden"'],
+  park: ['leisure="park"', 'leisure="garden"', 'leisure="nature_reserve"'],
   architecture: ['historic="building"', 'building="cathedral"', 'building="church"']
 };
 const ALL_CATEGORY_KEYS = [
@@ -59,7 +59,13 @@ const WIKIDATA_TYPES: WikidataTypeCategory[] = [
   { id: "Q13033698", category: "square" },
   { id: "Q202570", category: "landmark" },
   { id: "Q2319498", category: "landmark" },
-  { id: "Q839954", category: "landmark" }
+  { id: "Q839954", category: "landmark" },
+  { id: "Q12280", category: "architecture" },
+  { id: "Q12518", category: "viewpoint" },
+  { id: "Q24354", category: "architecture" },
+  { id: "Q860861", category: "landmark" },
+  { id: "Q15243209", category: "landmark" },
+  { id: "Q23442", category: "landmark" }
 ];
 
 export async function fetchPois(city: string, _categories: string[], osmType?: string, osmId?: number, center?: LatLng): Promise<Poi[]> {
@@ -211,15 +217,22 @@ async function fetchWikidataCandidates(center: LatLng, categories: string[]): Pr
   const values = selectedTypes.map((type) => `wd:${type.id}`).join(" ");
   const query = `
     SELECT ?item ?itemLabel ?type ?coord ?image ?description ?sitelinks WHERE {
-      SERVICE wikibase:around {
-        ?item wdt:P625 ?coord.
-        bd:serviceParam wikibase:center "Point(${center.lon} ${center.lat})"^^geo:wktLiteral.
-        bd:serviceParam wikibase:radius "12".
+      {
+        SELECT ?item (SAMPLE(?rawType) AS ?type) (SAMPLE(?rawCoord) AS ?coord) (MAX(?rawSitelinks) AS ?sitelinks) WHERE {
+          SERVICE wikibase:around {
+            ?item wdt:P625 ?rawCoord.
+            bd:serviceParam wikibase:center "Point(${center.lon} ${center.lat})"^^geo:wktLiteral.
+            bd:serviceParam wikibase:radius "16".
+          }
+          ?item wdt:P31/wdt:P279* ?rawType.
+          VALUES ?rawType { ${values} }
+          ?item wikibase:sitelinks ?rawSitelinks.
+          FILTER(?rawSitelinks >= 4)
+        }
+        GROUP BY ?item
+        ORDER BY DESC(?sitelinks)
+        LIMIT 260
       }
-      ?item wdt:P31 ?type.
-      VALUES ?type { ${values} }
-      ?item wikibase:sitelinks ?sitelinks.
-      FILTER(?sitelinks >= 8)
       OPTIONAL { ?item wdt:P18 ?image. }
       OPTIONAL {
         ?item schema:description ?description.
@@ -228,7 +241,7 @@ async function fetchWikidataCandidates(center: LatLng, categories: string[]): Pr
       SERVICE wikibase:label { bd:serviceParam wikibase:language "de,en". }
     }
     ORDER BY DESC(?sitelinks)
-    LIMIT 260
+    LIMIT 520
   `;
 
   try {
@@ -539,8 +552,8 @@ function buildSelectors(categories: string[]): string[] {
   return [...new Set(categories.flatMap((c) => CATEGORY_TAGS[c] ?? []))];
 }
 
-function shouldFetchRelations(categories: string[]): boolean {
-  return categories.length > 0;
+function shouldFetchRelations(_categories: string[]): boolean {
+  return true;
 }
 
 function wikidataTypesForCategories(categories: string[]): WikidataTypeCategory[] {
