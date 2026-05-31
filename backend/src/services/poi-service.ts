@@ -5,7 +5,8 @@ import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "poi-first-v29";
+const POI_CACHE_VERSION = "poi-first-v30";
+const MIN_CACHEABLE_POI_COUNT = 15;
 const FALLBACK_READY_COUNT = 18;
 const TARGET_POI_COUNT = 50;
 const ENRICHMENT_POOL_LIMIT = 260;
@@ -125,7 +126,7 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
     .sort(sortByPopularity)
     .slice(0, TARGET_POI_COUNT);
   const pois = stripInternalPoiFields(merged);
-  if (pois.length) POI_CACHE.set(cacheKey, pois);
+  if (pois.length >= MIN_CACHEABLE_POI_COUNT) POI_CACHE.set(cacheKey, pois);
   return pois;
 }
 
