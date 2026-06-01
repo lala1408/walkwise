@@ -225,6 +225,44 @@ button:disabled {
   background: #2563eb;
 }
 
+.llmBox {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+}
+
+.llmBox input[type="password"] {
+  width: 100%;
+}
+
+.llmBox p,
+.notice {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.checkRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.checkRow input {
+  width: 16px;
+  height: 16px;
+}
+
+.notice.success {
+  color: #15803d;
+}
+
 .chipRow {
   display: flex;
   flex-wrap: wrap;

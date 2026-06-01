@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
 import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
 import { geocodeAddress, getPois, planRoute, searchCities } from "./api";
-import type { AddressSuggestion, CitySuggestion, PlanResult, Poi, RoutePreference } from "./types";
+import type { AddressSuggestion, CitySuggestion, PlanResult, Poi, PoiEnhancement, RoutePreference } from "./types";
 import "./App.css";
 
 const CITY_DEFAULT = "Berlin";
+const LLM_TOKEN_STORAGE_KEY = "walkwise_llm_token";
 const INITIAL_CITY: CitySuggestion = {
   id: "relation/62422",
   name: "Berlin",
@@ -54,6 +55,22 @@ function parseLatLon(value: string): LatLon | null {
   return { lat, lon };
 }
 
+function readStoredLlmToken(): string {
+  try {
+    return window.localStorage.getItem(LLM_TOKEN_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function shouldShowLlmSettings(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("llm") || Boolean(readStoredLlmToken());
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [city, setCity] = useState(CITY_DEFAULT);
   const [citySuggestions, setCitySuggestions] = useState<CitySuggestion[]>([]);
@@ -84,6 +101,11 @@ export default function App() {
   const [shareFeedback, setShareFeedback] = useState("");
   const [plan, setPlan] = useState<PlanResult | null>(null);
   const [error, setError] = useState("");
+  const [showLlmSettings] = useState(shouldShowLlmSettings);
+  const [llmToken, setLlmToken] = useState(readStoredLlmToken);
+  const [useLlmEnhancement, setUseLlmEnhancement] = useState(() => Boolean(readStoredLlmToken()));
+  const [poiEnhancement, setPoiEnhancement] = useState<PoiEnhancement>("open-data");
+  const [llmNotice, setLlmNotice] = useState("");
 
   const selectedPois = useMemo(() => pois.filter((p) => selectedIds.has(p.id)), [pois, selectedIds]);
   const routeIndexByPoiId = useMemo(() => {
@@ -196,18 +218,39 @@ export default function App() {
     };
   }
 
+  function updateLlmToken(value: string) {
+    setLlmToken(value);
+    try {
+      if (value.trim()) window.localStorage.setItem(LLM_TOKEN_STORAGE_KEY, value.trim());
+      else window.localStorage.removeItem(LLM_TOKEN_STORAGE_KEY);
+    } catch {
+      // LocalStorage can be unavailable in private browser modes.
+    }
+  }
+
   async function loadPois() {
     setError("");
+    setLlmNotice("");
     setIsLoadingPois(true);
     setPois([]);
     setSelectedIds(new Set());
     setPlan(null);
+    setPoiEnhancement("open-data");
     try {
       const resolvedCity = selectedCity ?? (await resolveTypedCity());
-      const data = await getPois(city, [], resolvedCity);
-      setPois(data);
-      setSelectedIds(new Set(data.slice(0, 8).map((x) => x.id)));
-      if (!data.length) setError("Keine Sehenswürdigkeiten gefunden. Bitte eine andere Stadt wählen.");
+      const wantsLlm = showLlmSettings && useLlmEnhancement && Boolean(llmToken.trim());
+      const result = await getPois(city, [], resolvedCity, { useLlm: wantsLlm, llmToken: llmToken.trim() });
+      setPois(result.pois);
+      setPoiEnhancement(result.enhancement);
+      setSelectedIds(new Set(result.pois.slice(0, 8).map((x) => x.id)));
+      if (wantsLlm) {
+        setLlmNotice(
+          result.enhancement === "llm"
+            ? `KI-Veredelung aktiv${result.model ? ` (${result.model})` : ""}.`
+            : result.message ?? "KI nicht aktiv, Open-Data-Ranking wird genutzt."
+        );
+      }
+      if (!result.pois.length) setError("Keine Sehenswürdigkeiten gefunden. Bitte eine andere Stadt wählen.");
     } catch {
       setError("POIs konnten nicht geladen werden.");
     } finally {
@@ -459,6 +502,23 @@ export default function App() {
         </div>
         {selectedCity && <p className="selectedCity">Ausgewählt: {selectedCity.displayName}</p>}
 
+        {showLlmSettings && (
+          <div className="llmBox">
+            <label className="checkRow">
+              <input type="checkbox" checked={useLlmEnhancement} onChange={(event) => setUseLlmEnhancement(event.target.checked)} />
+              KI-Veredelung fuer meine Suche
+            </label>
+            <input
+              type="password"
+              value={llmToken}
+              onChange={(event) => updateLlmToken(event.target.value)}
+              placeholder="Privates Walkwise-Token"
+              autoComplete="off"
+            />
+            <p>Nur mit deinem Token aktiv. Oeffentliche Nutzer bleiben beim Open-Data-Ranking.</p>
+          </div>
+        )}
+
         <button type="button" onClick={loadPois} disabled={isLoadingPois}>
           {isLoadingPois ? (
             <span className="buttonLoading">
@@ -560,7 +620,12 @@ export default function App() {
           </button>
         </div>
         {isLoadingPois && <p className="resultMeta">Suche die beliebtesten Orte aus offenen Daten...</p>}
-        {pois.length > 0 && !isLoadingPois && <p className="resultMeta">{pois.length} Vorschläge, sortiert nach Beliebtheit</p>}
+        {llmNotice && !isLoadingPois && <p className={poiEnhancement === "llm" ? "notice success" : "notice"}>{llmNotice}</p>}
+        {pois.length > 0 && !isLoadingPois && (
+          <p className="resultMeta">
+            {pois.length} Vorschläge, {poiEnhancement === "llm" ? "KI-veredelt" : "sortiert nach Beliebtheit"}
+          </p>
+        )}
         <div className="poiList">
           {isLoadingPois &&
             Array.from({ length: 5 }).map((_, index) => (

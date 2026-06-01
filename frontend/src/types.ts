@@ -8,6 +8,15 @@ export type Poi = {
   priority: number;
 };
 
+export type PoiEnhancement = "open-data" | "llm" | "llm-fallback" | "llm-unauthorized";
+
+export type PoiResult = {
+  pois: Poi[];
+  enhancement: PoiEnhancement;
+  message?: string;
+  model?: string;
+};
+
 export type CitySuggestion = {
   id: string;
   name: string;

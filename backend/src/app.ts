@@ -4,6 +4,7 @@ import { z } from "zod";
 import { searchCities } from "./services/city-service.js";
 import { geocodeAddress } from "./services/geocode-service.js";
 import { fetchPois } from "./services/poi-service.js";
+import { canUseLlmEnhancement, enhancePoisWithLlm } from "./services/llm-poi-service.js";
 import { buildWalkingPlan } from "./services/optimizer.js";
 
 const routeRequestSchema = z.object({
@@ -79,7 +80,16 @@ export function createApp() {
       const lon = req.query.lon ? Number(req.query.lon) : undefined;
       const center = Number.isFinite(lat) && Number.isFinite(lon) ? { lat: lat as number, lon: lon as number } : undefined;
       const pois = await fetchPois(city, categories, osmType, osmId, center);
-      return res.json({ pois });
+      const wantsLlm = req.query.enhance === "llm";
+      if (!wantsLlm) return res.json({ pois, enhancement: "open-data" });
+      if (!canUseLlmEnhancement(wantsLlm, req.get("x-walkwise-llm-token"))) {
+        return res.json({
+          pois,
+          enhancement: "llm-unauthorized",
+          message: "KI-Veredelung nicht aktiv, Open-Data-Ranking wird genutzt."
+        });
+      }
+      return res.json(await enhancePoisWithLlm(city, pois, center));
     } catch (error) {
       console.error("Failed to fetch POIs", error);
       return res.status(502).json({ error: "Failed to fetch POIs from OpenStreetMap" });

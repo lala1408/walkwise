@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { AddressSuggestion, CitySuggestion, PlanResult, Poi, RoutePreference } from "./types";
+import type { AddressSuggestion, CitySuggestion, PlanResult, Poi, PoiResult, RoutePreference } from "./types";
 
 const api = axios.create({ baseURL: "/api" });
 
@@ -8,7 +8,12 @@ export async function searchCities(query: string): Promise<CitySuggestion[]> {
   return res.data.cities as CitySuggestion[];
 }
 
-export async function getPois(city: string, categories: string[], selectedCity?: CitySuggestion | null): Promise<Poi[]> {
+export async function getPois(
+  city: string,
+  categories: string[],
+  selectedCity?: CitySuggestion | null,
+  options?: { useLlm?: boolean; llmToken?: string }
+): Promise<PoiResult> {
   const res = await api.get("/pois", {
     params: {
       city,
@@ -17,10 +22,19 @@ export async function getPois(city: string, categories: string[], selectedCity?:
       osmId: selectedCity?.osmId,
       lat: selectedCity?.location.lat,
       lon: selectedCity?.location.lon,
+      enhance: options?.useLlm ? "llm" : undefined,
       requestId: Date.now()
+    },
+    headers: {
+      ...(options?.useLlm && options.llmToken ? { "x-walkwise-llm-token": options.llmToken } : {})
     }
   });
-  return res.data.pois as Poi[];
+  return {
+    pois: res.data.pois as Poi[],
+    enhancement: res.data.enhancement ?? "open-data",
+    message: res.data.message,
+    model: res.data.model
+  };
 }
 
 export async function geocodeAddress(
