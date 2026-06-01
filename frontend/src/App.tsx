@@ -199,12 +199,14 @@ export default function App() {
   async function loadPois() {
     setError("");
     setIsLoadingPois(true);
+    setPois([]);
+    setSelectedIds(new Set());
+    setPlan(null);
     try {
       const resolvedCity = selectedCity ?? (await resolveTypedCity());
       const data = await getPois(city, [], resolvedCity);
       setPois(data);
       setSelectedIds(new Set(data.slice(0, 8).map((x) => x.id)));
-      setPlan(null);
       if (!data.length) setError("Keine Sehenswürdigkeiten gefunden. Bitte eine andere Stadt wählen.");
     } catch {
       setError("POIs konnten nicht geladen werden.");

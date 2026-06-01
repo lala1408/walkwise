@@ -5,9 +5,10 @@ import { OPEN_DATA_HEADERS } from "./open-data-headers.js";
 import { haversineKm } from "./geo.js";
 
 const POI_CACHE = new LRUCache<string, Poi[]>({ max: 100, ttl: 1000 * 60 * 30 });
-const POI_CACHE_VERSION = "poi-first-v30";
-const MIN_CACHEABLE_POI_COUNT = 15;
+const POI_CACHE_VERSION = "poi-first-v31";
+const MIN_CACHEABLE_POI_COUNT = 25;
 const FALLBACK_READY_COUNT = 18;
+const FALLBACK_TRIGGER_COUNT = 35;
 const TARGET_POI_COUNT = 50;
 const ENRICHMENT_POOL_LIMIT = 260;
 const OVERPASS_RADIUS_METERS = 12000;
@@ -120,8 +121,12 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
   const osmPois = center ? await resolveWithin(osmPromise, osmWaitMs, []).finally(() => overpassController.abort()) : await osmPromise;
   const enrichedPrimaryPois = await enrichWikidataImages(mergePois([...osmPois, ...wikidataPois]).sort(sortByPopularity).slice(0, ENRICHMENT_POOL_LIMIT));
   const primaryPois = mergePois(enrichedPrimaryPois).filter((poi) => isLikelySightseeingPoi(poi, city, center)).sort(sortByPopularity);
-  const fallbackPois = center && primaryPois.length < FALLBACK_READY_COUNT ? await fetchFallbackOpenDataPois(city, center, categories) : [];
-  const merged = mergePois([...primaryPois, ...fallbackPois])
+  const fallbackPois = center && primaryPois.length < FALLBACK_TRIGGER_COUNT ? await fetchFallbackOpenDataPois(city, center, categories) : [];
+  const mergedCandidates = mergePois([...primaryPois, ...fallbackPois]);
+  const enrichedMergedPois = fallbackPois.length
+    ? await enrichWikidataImages(mergedCandidates.sort(sortByPopularity).slice(0, ENRICHMENT_POOL_LIMIT))
+    : mergedCandidates;
+  const merged = mergePois(enrichedMergedPois)
     .filter((poi) => isLikelySightseeingPoi(poi, city, center))
     .sort(sortByPopularity)
     .slice(0, TARGET_POI_COUNT);
@@ -131,10 +136,15 @@ export async function fetchPois(city: string, _categories: string[], osmType?: s
 }
 
 async function fetchFallbackOpenDataPois(city: string, center: LatLng, categories: string[]): Promise<InternalPoi[]> {
-  const [wikipediaGeoResult, wikipediaSearchResult] = await Promise.allSettled([fetchWikipediaGeoPois(city, center), fetchWikipediaSearchPois(city, center)]);
+  const [wikipediaGeoResult, wikipediaSearchResult, wikipediaCategoryResult] = await Promise.allSettled([
+    fetchWikipediaGeoPois(city, center),
+    fetchWikipediaSearchPois(city, center),
+    fetchWikipediaCategoryPois(city, center)
+  ]);
   const wikipediaGeoPois = wikipediaGeoResult.status === "fulfilled" ? wikipediaGeoResult.value : [];
   const wikipediaSearchPois = wikipediaSearchResult.status === "fulfilled" ? wikipediaSearchResult.value : [];
-  return mergePois([...wikipediaSearchPois, ...wikipediaGeoPois]).sort(sortByPopularity);
+  const wikipediaCategoryPois = wikipediaCategoryResult.status === "fulfilled" ? wikipediaCategoryResult.value : [];
+  return mergePois([...wikipediaSearchPois, ...wikipediaCategoryPois, ...wikipediaGeoPois]).sort(sortByPopularity);
 }
 
 async function fetchOverpassPois(query: string, signal?: AbortSignal): Promise<InternalPoi[]> {
@@ -341,9 +351,40 @@ async function fetchWikipediaGeoPois(city: string, center: LatLng): Promise<Inte
 }
 
 async function fetchWikipediaSearchPois(city: string, center: LatLng): Promise<InternalPoi[]> {
-  const searches = [`${city} tourist attractions`, `${city} landmarks`, `${city} museums parks monuments`];
+  const searches = wikipediaCitySearchLabels(city).flatMap((cityLabel) => [
+    `${cityLabel} tourist attractions`,
+    `${cityLabel} landmarks`,
+    `${cityLabel} museums parks monuments`,
+    `things to see in ${cityLabel}`,
+    `points of interest in ${cityLabel}`
+  ]);
   const results = await Promise.allSettled(searches.map((search) => fetchWikipediaSearchQuery(search)));
-  return mergePois(results.flatMap((result) => (result.status === "fulfilled" ? normalizeWikipediaPois(result.value, city, 15, center, 25) : []))).sort(sortByPopularity);
+  return mergePois(results.flatMap((result) => (result.status === "fulfilled" ? normalizeWikipediaPois(result.value, city, 15, center, 30) : []))).sort(sortByPopularity);
+}
+
+async function fetchWikipediaCategoryPois(city: string, center: LatLng): Promise<InternalPoi[]> {
+  const categoryTitles = wikipediaCitySearchLabels(city).flatMap((cityLabel) => [
+    `Category:Tourist attractions in ${cityLabel}`,
+    `Category:Visitor attractions in ${cityLabel}`,
+    `Category:Landmarks in ${cityLabel}`,
+    `Category:Museums in ${cityLabel}`,
+    `Category:Parks in ${cityLabel}`
+  ]);
+  const uniqueTitles = [...new Set(categoryTitles)].slice(0, 8);
+  const [pageResults, subcategoryResults] = await Promise.all([
+    Promise.allSettled(uniqueTitles.map((title) => fetchWikipediaCategoryQuery(title))),
+    Promise.allSettled(uniqueTitles.map((title) => fetchWikipediaSubcategoryTitles(title)))
+  ]);
+  const subcategoryTitles = [
+    ...new Set(
+      subcategoryResults
+        .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+        .filter(isUsefulWikipediaPoiCategoryTitle)
+    )
+  ].slice(0, 14);
+  const subcategoryPageResults = await Promise.allSettled(subcategoryTitles.map((title) => fetchWikipediaCategoryQuery(title)));
+  const pages = [...pageResults, ...subcategoryPageResults].flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+  return mergePois(normalizeWikipediaPois(pages, city, -30, center, 30)).sort(sortByPopularity);
 }
 
 async function fetchWikipediaSearchQuery(search: string): Promise<any[]> {
@@ -364,6 +405,60 @@ async function fetchWikipediaSearchQuery(search: string): Promise<any[]> {
     timeout: 3500
   });
   return Object.values(response.data?.query?.pages ?? {});
+}
+
+async function fetchWikipediaCategoryQuery(categoryTitle: string): Promise<any[]> {
+  const response = await axios.get("https://en.wikipedia.org/w/api.php", {
+    params: {
+      action: "query",
+      generator: "categorymembers",
+      gcmtitle: categoryTitle,
+      gcmtype: "page",
+      gcmlimit: 100,
+      prop: "coordinates|description|pageimages|pageprops",
+      piprop: "thumbnail",
+      pithumbsize: 360,
+      redirects: 1,
+      format: "json",
+      origin: "*"
+    },
+    headers: OPEN_DATA_HEADERS,
+    timeout: 3500
+  });
+  return Object.values(response.data?.query?.pages ?? {});
+}
+
+async function fetchWikipediaSubcategoryTitles(categoryTitle: string): Promise<string[]> {
+  const response = await axios.get("https://en.wikipedia.org/w/api.php", {
+    params: {
+      action: "query",
+      list: "categorymembers",
+      cmtitle: categoryTitle,
+      cmtype: "subcat",
+      cmlimit: 50,
+      format: "json",
+      origin: "*"
+    },
+    headers: OPEN_DATA_HEADERS,
+    timeout: 3000
+  });
+  return (response.data?.query?.categorymembers ?? []).map((member: any) => String(member.title ?? "")).filter(Boolean);
+}
+
+function isUsefulWikipediaPoiCategoryTitle(categoryTitle: string): boolean {
+  const normalized = categoryTitle.toLowerCase();
+  if (/\b(restaurants|hotels|schools|universities|airports|stations|sports|teams|events|neighborhoods|districts)\b/.test(normalized)) return false;
+  return /\b(tourist attractions|visitor attractions|landmarks|museums|parks|gardens|buildings|bridges|churches|cathedrals|monuments|memorials|squares|plazas|theatres|theaters|zoos|aquaria|skyscrapers|public art|historic sites)\b/.test(
+    normalized
+  );
+}
+
+function wikipediaCitySearchLabels(city: string): string[] {
+  const trimmed = city.trim();
+  const normalized = normalizeName(trimmed);
+  const labels = [trimmed];
+  if (normalized === "new york") labels.unshift("New York City");
+  return [...new Set(labels.filter(Boolean))];
 }
 
 function normalizeWikipediaPois(pages: any[], city: string, scoreBoost = 0, center?: LatLng, maxDistanceKm?: number): InternalPoi[] {
@@ -527,7 +622,7 @@ async function enrichWikidataImages(pois: InternalPoi[]): Promise<InternalPoi[]>
         }
       }
     `;
-    const response = await requestWikidata(query, 4000);
+    const response = await requestWikidata(query, 7000);
     const imageById = new Map<string, string>();
     const descriptionById = new Map<string, string>();
     const sitelinksById = new Map<string, number>();

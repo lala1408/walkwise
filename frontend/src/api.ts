@@ -16,7 +16,8 @@ export async function getPois(city: string, categories: string[], selectedCity?:
       osmType: selectedCity?.osmType,
       osmId: selectedCity?.osmId,
       lat: selectedCity?.location.lat,
-      lon: selectedCity?.location.lon
+      lon: selectedCity?.location.lon,
+      requestId: Date.now()
     }
   });
   return res.data.pois as Poi[];

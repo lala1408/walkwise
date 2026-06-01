@@ -65,6 +65,7 @@ export function createApp() {
   });
 
   app.get("/pois", async (req, res) => {
+    res.set("Cache-Control", "no-store, max-age=0");
     const city = String(req.query.city ?? "").trim();
     const categories = String(req.query.categories ?? "")
       .split(",")
