@@ -359,7 +359,7 @@ async function fetchWikipediaSearchPois(city: string, center: LatLng): Promise<I
     `points of interest in ${cityLabel}`
   ]);
   const results = await Promise.allSettled(searches.map((search) => fetchWikipediaSearchQuery(search)));
-  return mergePois(results.flatMap((result) => (result.status === "fulfilled" ? normalizeWikipediaPois(result.value, city, 15, center, 30) : []))).sort(sortByPopularity);
+  return mergePois(results.flatMap((result) => (result.status === "fulfilled" ? normalizeWikipediaPois(result.value, city, 15, center, 35) : []))).sort(sortByPopularity);
 }
 
 async function fetchWikipediaCategoryPois(city: string, center: LatLng): Promise<InternalPoi[]> {
@@ -381,10 +381,10 @@ async function fetchWikipediaCategoryPois(city: string, center: LatLng): Promise
         .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
         .filter(isUsefulWikipediaPoiCategoryTitle)
     )
-  ].slice(0, 14);
+  ].slice(0, 22);
   const subcategoryPageResults = await Promise.allSettled(subcategoryTitles.map((title) => fetchWikipediaCategoryQuery(title)));
   const pages = [...pageResults, ...subcategoryPageResults].flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-  return mergePois(normalizeWikipediaPois(pages, city, -30, center, 30)).sort(sortByPopularity);
+  return mergePois(normalizeWikipediaPois(pages, city, -30, center, 35)).sort(sortByPopularity);
 }
 
 async function fetchWikipediaSearchQuery(search: string): Promise<any[]> {
@@ -606,7 +606,7 @@ function chooseBestDescription(primary: InternalPoi, secondary: InternalPoi): st
 }
 
 async function enrichWikidataImages(pois: InternalPoi[]): Promise<InternalPoi[]> {
-  const ids = [...new Set(pois.map((poi) => poi.wikidataId).filter(Boolean))];
+  const ids = [...new Set(pois.map((poi) => poi.wikidataId).filter((id): id is string => Boolean(id)))];
   if (!ids.length) return pois;
 
   try {
@@ -639,20 +639,72 @@ async function enrichWikidataImages(pois: InternalPoi[]): Promise<InternalPoi[]>
       }
     }
 
-    return pois.map((poi) => {
-      const image = poi.wikidataId ? imageById.get(poi.wikidataId) : null;
-      const description = poi.wikidataId ? descriptionById.get(poi.wikidataId) : null;
-      const sitelinks = poi.wikidataId ? sitelinksById.get(poi.wikidataId) ?? 0 : 0;
-      return {
-        ...poi,
-        imageUrl: image ?? poi.imageUrl,
-        description: description && !poi.hasCustomDescription ? buildPoiSummary(poi.name, poi.category, description) : poi.description,
-        popularityScore: poi.popularityScore + Math.min(sitelinks, 500) / 4
-      };
-    });
+    return applyWikidataDetails(pois, imageById, descriptionById, sitelinksById);
+  } catch {
+    return enrichWikidataImagesFromEntities(pois, ids);
+  }
+}
+
+async function enrichWikidataImagesFromEntities(pois: InternalPoi[], ids: string[]): Promise<InternalPoi[]> {
+  try {
+    const imageById = new Map<string, string>();
+    const descriptionById = new Map<string, string>();
+    const sitelinksById = new Map<string, number>();
+    const chunks: string[][] = [];
+    for (let index = 0; index < ids.length; index += 50) chunks.push(ids.slice(index, index + 50));
+
+    const results = await Promise.allSettled(
+      chunks.map((chunk) =>
+        axios.get("https://www.wikidata.org/w/api.php", {
+          params: {
+            action: "wbgetentities",
+            ids: chunk.join("|"),
+            props: "claims|descriptions|sitelinks",
+            languages: "de|en",
+            format: "json",
+            origin: "*"
+          },
+          headers: OPEN_DATA_HEADERS,
+          timeout: 3500
+        })
+      )
+    );
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const entities = result.value.data?.entities ?? {};
+      for (const [id, entity] of Object.entries<any>(entities)) {
+        const imageFile = String(entity.claims?.P18?.[0]?.mainsnak?.datavalue?.value ?? "");
+        const description = String(entity.descriptions?.de?.value ?? entity.descriptions?.en?.value ?? "");
+        if (imageFile) imageById.set(id, `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(imageFile)}?width=360`);
+        if (isUsefulDescription(description)) descriptionById.set(id, shortenDescription(sentenceCase(description)));
+        sitelinksById.set(id, Object.keys(entity.sitelinks ?? {}).length);
+      }
+    }
+
+    return applyWikidataDetails(pois, imageById, descriptionById, sitelinksById);
   } catch {
     return pois;
   }
+}
+
+function applyWikidataDetails(
+  pois: InternalPoi[],
+  imageById: Map<string, string>,
+  descriptionById: Map<string, string>,
+  sitelinksById: Map<string, number>
+): InternalPoi[] {
+  return pois.map((poi) => {
+    const image = poi.wikidataId ? imageById.get(poi.wikidataId) : null;
+    const description = poi.wikidataId ? descriptionById.get(poi.wikidataId) : null;
+    const sitelinks = poi.wikidataId ? sitelinksById.get(poi.wikidataId) ?? 0 : 0;
+    return {
+      ...poi,
+      imageUrl: image ?? poi.imageUrl,
+      description: description && !poi.hasCustomDescription ? buildPoiSummary(poi.name, poi.category, description) : poi.description,
+      popularityScore: poi.popularityScore + Math.min(sitelinks, 500) / 4
+    };
+  });
 }
 
 async function requestWikidata(query: string, timeout: number, retryWithPost = true) {
