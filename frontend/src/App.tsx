@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import L from "leaflet";
 import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
 import { geocodeAddress, getPois, planRoute, searchCities } from "./api";
@@ -47,6 +47,8 @@ type SharedRouteState = {
   routePreference: RoutePreference;
   pois: Poi[];
   orderedPois?: Poi[];
+  poiIds?: string[];
+  fallbackPois?: Poi[];
 };
 type CompactSharedRouteState = {
   v: 1;
@@ -59,6 +61,28 @@ type CompactSharedRouteState = {
   rp: RoutePreference;
   p: CompactSharedPoi[];
   o?: CompactSharedPoi[];
+};
+type ThinSharedRouteState = {
+  v: 2;
+  c: string;
+  sc: CompactSharedCity | null;
+  st?: string;
+  et?: string;
+  rs?: CompactLatLon | LatLon | null;
+  re?: CompactLatLon | LatLon | null;
+  rp?: RoutePreference;
+  ids: string[];
+  f?: CompactSharedPoi[];
+};
+type CompactLatLon = [number, number];
+type CompactOsmType = "r" | "w" | "n";
+type CompactSharedCity = {
+  d?: string;
+  y?: string;
+  a: number;
+  o: number;
+  t: CompactOsmType | CitySuggestion["osmType"];
+  x: number;
 };
 type CompactSharedPoi = {
   i: string;
@@ -141,33 +165,51 @@ export default function App() {
     const sharedRoute = readSharedRouteState();
     if (!sharedRoute) return;
 
-    const importedPois = sharedRoute.orderedPois ?? sharedRoute.pois;
-    setCity(sharedRoute.city);
-    setSelectedCity(sharedRoute.selectedCity);
-    setStartText(sharedRoute.startText);
-    setEndText(sharedRoute.endText);
-    setRouteStart(sharedRoute.routeStart);
-    setRouteEnd(sharedRoute.routeEnd);
-    setRoutePreference(sharedRoute.routePreference === "manual" ? "fastest" : sharedRoute.routePreference);
-    setPois(importedPois);
-    setSelectedIds(new Set(importedPois.map((poi) => poi.id)));
-    setIsPlanning(true);
-    planRoute({
-      city: sharedRoute.city,
-      start: sharedRoute.routeStart ?? undefined,
-      end: sharedRoute.routeEnd ?? undefined,
-      route_preference: "manual",
-      selected_pois: importedPois
-    })
-      .then(setPlan)
-      .catch(() => setError("Geteilte Route konnte nicht geladen werden."))
-      .finally(() => setIsPlanning(false));
+    let isActive = true;
+    window.queueMicrotask(() => {
+      if (!isActive) return;
+      setCity(sharedRoute.city);
+      setSelectedCity(sharedRoute.selectedCity);
+      setStartText(sharedRoute.startText);
+      setEndText(sharedRoute.endText);
+      setRouteStart(sharedRoute.routeStart);
+      setRouteEnd(sharedRoute.routeEnd);
+      setRoutePreference(sharedRoute.routePreference === "manual" ? "fastest" : sharedRoute.routePreference);
+      setIsPlanning(true);
+    });
+
+    hydrateSharedRoutePois(sharedRoute)
+      .then(async (importedPois) => {
+        if (!isActive) return;
+        setPois(importedPois);
+        setSelectedIds(new Set(importedPois.map((poi) => poi.id)));
+        const route = await planRoute({
+          city: sharedRoute.city,
+          start: sharedRoute.routeStart ?? undefined,
+          end: sharedRoute.routeEnd ?? undefined,
+          route_preference: "manual",
+          selected_pois: importedPois
+        });
+        if (isActive) setPlan(route);
+      })
+      .catch(() => {
+        if (isActive) setError("Geteilte Route konnte nicht geladen werden.");
+      })
+      .finally(() => {
+        if (isActive) setIsPlanning(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   useEffect(() => {
     if (city.trim().length < 2 || selectedCity?.name === city.trim()) {
-      setIsSearchingCities(false);
-      setCitySuggestions([]);
+      window.queueMicrotask(() => {
+        setIsSearchingCities(false);
+        setCitySuggestions([]);
+      });
       return;
     }
 
@@ -190,29 +232,12 @@ export default function App() {
     };
   }, [city, selectedCity?.name]);
 
-  useEffect(() => searchAddressesForField(startText, setStartSuggestions, setIsSearchingStart, selectedStartLabel), [
-    city,
-    selectedCity,
-    startText,
-    selectedStartLabel
-  ]);
-  useEffect(() => searchAddressesForField(endText, setEndSuggestions, setIsSearchingEnd, selectedEndLabel), [
-    city,
-    selectedCity,
-    endText,
-    selectedEndLabel
-  ]);
-  useEffect(
-    () => searchAddressesForField(manualPoiText, setManualPoiSuggestions, setIsSearchingManualPoi, selectedManualPoiLabel),
-    [city, selectedCity, manualPoiText, selectedManualPoiLabel]
-  );
-
-  function searchAddressesForField(
+  const searchAddressesForField = useCallback((
     value: string,
     setSuggestions: (suggestions: AddressSuggestion[]) => void,
     setSearching: (value: boolean) => void,
     selectedLabel = ""
-  ) {
+  ) => {
     const trimmed = value.trim();
     if (trimmed.length < 3 || parseLatLon(trimmed) || (selectedLabel && value === selectedLabel)) {
       setSearching(false);
@@ -237,7 +262,22 @@ export default function App() {
       isActive = false;
       window.clearTimeout(handle);
     };
-  }
+  }, [city, selectedCity]);
+
+  useEffect(() => searchAddressesForField(startText, setStartSuggestions, setIsSearchingStart, selectedStartLabel), [
+    searchAddressesForField,
+    startText,
+    selectedStartLabel
+  ]);
+  useEffect(() => searchAddressesForField(endText, setEndSuggestions, setIsSearchingEnd, selectedEndLabel), [
+    searchAddressesForField,
+    endText,
+    selectedEndLabel
+  ]);
+  useEffect(
+    () => searchAddressesForField(manualPoiText, setManualPoiSuggestions, setIsSearchingManualPoi, selectedManualPoiLabel),
+    [searchAddressesForField, manualPoiText, selectedManualPoiLabel]
+  );
 
   function updateLlmToken(value: string) {
     setLlmToken(value);
@@ -928,7 +968,7 @@ function readSharedRouteState(): SharedRouteState | null {
 }
 
 function encodeShareState(state: SharedRouteState): string {
-  const json = JSON.stringify(toCompactShareState(state));
+  const json = JSON.stringify(toThinShareState(state));
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   bytes.forEach((byte) => {
@@ -938,7 +978,12 @@ function encodeShareState(state: SharedRouteState): string {
 }
 
 function decodeCompactShareState(value: string): SharedRouteState {
-  const compact = decodeBase64Json(value) as CompactSharedRouteState;
+  const compact = decodeBase64Json(value);
+  if (isThinSharedRouteState(compact)) return fromThinShareState(compact);
+  return fromCompactShareState(compact as CompactSharedRouteState);
+}
+
+function fromCompactShareState(compact: CompactSharedRouteState): SharedRouteState {
   return {
     city: compact.c,
     selectedCity: compact.sc,
@@ -949,6 +994,22 @@ function decodeCompactShareState(value: string): SharedRouteState {
     routePreference: compact.rp,
     pois: compact.p.map(fromCompactPoi),
     orderedPois: compact.o?.map(fromCompactPoi)
+  };
+}
+
+function fromThinShareState(compact: ThinSharedRouteState): SharedRouteState {
+  const fallbackPois = compact.f?.map(fromCompactPoi) ?? [];
+  return {
+    city: compact.c,
+    selectedCity: fromCompactCity(compact.sc, compact.c),
+    startText: compact.st ?? "",
+    endText: compact.et ?? "",
+    routeStart: fromCompactLatLon(compact.rs),
+    routeEnd: fromCompactLatLon(compact.re),
+    routePreference: compact.rp ?? "fastest",
+    pois: fallbackPois,
+    poiIds: compact.ids.map(fromCompactPoiId),
+    fallbackPois
   };
 }
 
@@ -964,20 +1025,52 @@ function decodeBase64Json(value: string): unknown {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-function toCompactShareState(state: SharedRouteState): CompactSharedRouteState {
-  const orderedPois =
-    state.orderedPois && !hasSamePoiOrder(state.pois, state.orderedPois) ? state.orderedPois.map(toCompactPoi) : undefined;
+function isThinSharedRouteState(value: unknown): value is ThinSharedRouteState {
+  return typeof value === "object" && value !== null && (value as { v?: unknown }).v === 2 && Array.isArray((value as { ids?: unknown }).ids);
+}
+
+function toThinShareState(state: SharedRouteState): ThinSharedRouteState {
+  const orderedPois = state.orderedPois?.length ? state.orderedPois : state.pois;
+  const fallbackPois = orderedPois.filter(shouldInlineSharedPoi);
   return {
-    v: 1,
+    v: 2,
     c: state.city,
-    sc: state.selectedCity,
-    st: state.startText,
-    et: state.endText,
-    rs: state.routeStart,
-    re: state.routeEnd,
-    rp: state.routePreference,
-    p: state.pois.map(toCompactPoi),
-    o: orderedPois
+    sc: toCompactCity(state.selectedCity),
+    st: state.routeStart ? undefined : state.startText || undefined,
+    et: state.routeEnd ? undefined : state.endText || undefined,
+    rs: toCompactLatLon(state.routeStart),
+    re: toCompactLatLon(state.routeEnd),
+    rp: state.routePreference === "fastest" ? undefined : state.routePreference,
+    ids: orderedPois.map((poi) => toCompactPoiId(poi.id)),
+    f: fallbackPois.length ? fallbackPois.map(toCompactPoi) : undefined
+  };
+}
+
+function toCompactCity(city: CitySuggestion | null): CompactSharedCity | null {
+  if (!city) return null;
+  return {
+    y: city.country,
+    a: roundCoordinate(city.location.lat),
+    o: roundCoordinate(city.location.lon),
+    t: toCompactOsmType(city.osmType),
+    x: city.osmId
+  };
+}
+
+function fromCompactCity(city: CompactSharedCity | CitySuggestion | null, fallbackName = ""): CitySuggestion | null {
+  if (!city) return null;
+  if ("location" in city) return city;
+  const osmType = fromCompactOsmType(city.t);
+  const name = "n" in city && typeof city.n === "string" ? city.n : fallbackName;
+  const displayName = city.d ?? [name, city.y].filter(Boolean).join(", ") ?? name;
+  return {
+    id: "i" in city && typeof city.i === "string" ? city.i : `${osmType}/${city.x}`,
+    name,
+    displayName,
+    country: city.y,
+    location: { lat: city.a, lon: city.o },
+    osmType,
+    osmId: city.x
   };
 }
 
@@ -991,6 +1084,25 @@ function toCompactPoi(poi: Poi): CompactSharedPoi {
     o: roundCoordinate(poi.location.lon),
     p: poi.priority
   };
+}
+
+async function hydrateSharedRoutePois(state: SharedRouteState): Promise<Poi[]> {
+  const importedPois = state.orderedPois ?? state.pois;
+  if (!state.poiIds?.length) return importedPois;
+
+  const fallbackById = new Map((state.fallbackPois ?? importedPois).map((poi) => [poi.id, poi]));
+  const result = await getPois(state.city, [], state.selectedCity);
+  const fetchedById = new Map(result.pois.map((poi) => [poi.id, poi]));
+  const orderedPois = state.poiIds
+    .map((id) => fetchedById.get(id) ?? fallbackById.get(id))
+    .filter((poi): poi is Poi => Boolean(poi));
+
+  if (!orderedPois.length) throw new Error("No POIs found for shared route.");
+  return orderedPois;
+}
+
+function shouldInlineSharedPoi(poi: Poi): boolean {
+  return poi.id.startsWith("manual/");
 }
 
 function fromCompactPoi(poi: CompactSharedPoi): Poi {
@@ -1011,12 +1123,54 @@ function compactDescription(description: string): string | undefined {
   return clean.length <= 120 ? clean : `${clean.slice(0, 117).trim()}...`;
 }
 
+function toCompactLatLon(point: LatLon | null): CompactLatLon | undefined {
+  return point ? [roundCoordinate(point.lat), roundCoordinate(point.lon)] : undefined;
+}
+
+function fromCompactLatLon(point: ThinSharedRouteState["rs"]): LatLon | null {
+  if (!point) return null;
+  if (Array.isArray(point)) return { lat: point[0], lon: point[1] };
+  return point;
+}
+
 function roundCoordinate(value: number): number {
   return Math.round(value * 100000) / 100000;
 }
 
-function hasSamePoiOrder(left: Poi[], right: Poi[]): boolean {
-  return left.length === right.length && left.every((poi, index) => poi.id === right[index]?.id);
+function toCompactPoiId(id: string): string {
+  const wikidata = id.match(/^wikidata\/Q(\d+)$/);
+  if (wikidata) return `q${wikidata[1]}`;
+  const wikipedia = id.match(/^wikipedia\/(\d+)$/);
+  if (wikipedia) return `p${wikipedia[1]}`;
+  const node = id.match(/^node\/(\d+)$/);
+  if (node) return `n${node[1]}`;
+  const way = id.match(/^way\/(\d+)$/);
+  if (way) return `w${way[1]}`;
+  const relation = id.match(/^relation\/(\d+)$/);
+  if (relation) return `r${relation[1]}`;
+  return id;
+}
+
+function fromCompactPoiId(id: string): string {
+  if (/^q\d+$/.test(id)) return `wikidata/Q${id.slice(1)}`;
+  if (/^p\d+$/.test(id)) return `wikipedia/${id.slice(1)}`;
+  if (/^n\d+$/.test(id)) return `node/${id.slice(1)}`;
+  if (/^w\d+$/.test(id)) return `way/${id.slice(1)}`;
+  if (/^r\d+$/.test(id)) return `relation/${id.slice(1)}`;
+  return id;
+}
+
+function toCompactOsmType(type: CitySuggestion["osmType"]): CompactOsmType {
+  if (type === "relation") return "r";
+  if (type === "way") return "w";
+  return "n";
+}
+
+function fromCompactOsmType(type: CompactOsmType | CitySuggestion["osmType"]): CitySuggestion["osmType"] {
+  if (type === "r") return "relation";
+  if (type === "w") return "way";
+  if (type === "n") return "node";
+  return type;
 }
 
 async function copyToClipboard(value: string): Promise<boolean> {
