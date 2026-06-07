@@ -65,7 +65,7 @@ function readStoredLlmToken(): string {
 
 function shouldShowLlmSettings(): boolean {
   try {
-    return new URLSearchParams(window.location.search).has("llm") || Boolean(readStoredLlmToken());
+    return new URLSearchParams(window.location.search).has("llm");
   } catch {
     return false;
   }
