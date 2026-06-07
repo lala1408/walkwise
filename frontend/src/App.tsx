@@ -48,6 +48,27 @@ type SharedRouteState = {
   pois: Poi[];
   orderedPois?: Poi[];
 };
+type CompactSharedRouteState = {
+  v: 1;
+  c: string;
+  sc: CitySuggestion | null;
+  st: string;
+  et: string;
+  rs: LatLon | null;
+  re: LatLon | null;
+  rp: RoutePreference;
+  p: CompactSharedPoi[];
+  o?: CompactSharedPoi[];
+};
+type CompactSharedPoi = {
+  i: string;
+  n: string;
+  c: string;
+  d?: string;
+  a: number;
+  o: number;
+  p: number;
+};
 
 function parseLatLon(value: string): LatLon | null {
   const [lat, lon] = value.split(",").map((x) => Number(x.trim()));
@@ -430,7 +451,7 @@ export default function App() {
       setError("Bitte zuerst Sehenswürdigkeiten auswählen oder eine Route planen.");
       return;
     }
-    const url = `${window.location.origin}${window.location.pathname}#route=${encodeShareState(state)}`;
+    const url = `${window.location.origin}${window.location.pathname}#r=${encodeShareState(state)}`;
     void copyToClipboard(url).then((copied) => {
       setShareFeedback(copied ? "Link kopiert" : "Link erstellt");
       if (!copied) window.prompt("Route-Link", url);
@@ -895,17 +916,19 @@ function buildShareState(
 }
 
 function readSharedRouteState(): SharedRouteState | null {
-  const match = window.location.hash.match(/^#route=(.+)$/);
+  const compactMatch = window.location.hash.match(/^#r=(.+)$/);
+  const legacyMatch = window.location.hash.match(/^#route=(.+)$/);
+  const match = compactMatch ?? legacyMatch;
   if (!match) return null;
   try {
-    return decodeShareState(match[1]);
+    return compactMatch ? decodeCompactShareState(match[1]) : decodeLegacyShareState(match[1]);
   } catch {
     return null;
   }
 }
 
 function encodeShareState(state: SharedRouteState): string {
-  const json = JSON.stringify(state);
+  const json = JSON.stringify(toCompactShareState(state));
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   bytes.forEach((byte) => {
@@ -914,12 +937,86 @@ function encodeShareState(state: SharedRouteState): string {
   return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function decodeShareState(value: string): SharedRouteState {
+function decodeCompactShareState(value: string): SharedRouteState {
+  const compact = decodeBase64Json(value) as CompactSharedRouteState;
+  return {
+    city: compact.c,
+    selectedCity: compact.sc,
+    startText: compact.st,
+    endText: compact.et,
+    routeStart: compact.rs,
+    routeEnd: compact.re,
+    routePreference: compact.rp,
+    pois: compact.p.map(fromCompactPoi),
+    orderedPois: compact.o?.map(fromCompactPoi)
+  };
+}
+
+function decodeLegacyShareState(value: string): SharedRouteState {
+  return decodeBase64Json(value) as SharedRouteState;
+}
+
+function decodeBase64Json(value: string): unknown {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   const binary = window.atob(padded);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes)) as SharedRouteState;
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function toCompactShareState(state: SharedRouteState): CompactSharedRouteState {
+  const orderedPois =
+    state.orderedPois && !hasSamePoiOrder(state.pois, state.orderedPois) ? state.orderedPois.map(toCompactPoi) : undefined;
+  return {
+    v: 1,
+    c: state.city,
+    sc: state.selectedCity,
+    st: state.startText,
+    et: state.endText,
+    rs: state.routeStart,
+    re: state.routeEnd,
+    rp: state.routePreference,
+    p: state.pois.map(toCompactPoi),
+    o: orderedPois
+  };
+}
+
+function toCompactPoi(poi: Poi): CompactSharedPoi {
+  return {
+    i: poi.id,
+    n: poi.name,
+    c: poi.category,
+    d: compactDescription(poi.description),
+    a: roundCoordinate(poi.location.lat),
+    o: roundCoordinate(poi.location.lon),
+    p: poi.priority
+  };
+}
+
+function fromCompactPoi(poi: CompactSharedPoi): Poi {
+  return {
+    id: poi.i,
+    name: poi.n,
+    category: poi.c,
+    description: poi.d ?? "Interessanter Stopp fuer deine Walking-Route.",
+    imageUrl: `https://placehold.co/360x220/e2e8f0/334155?text=${encodeURIComponent(poi.n.slice(0, 28))}`,
+    location: { lat: poi.a, lon: poi.o },
+    priority: poi.p
+  };
+}
+
+function compactDescription(description: string): string | undefined {
+  const clean = description.replace(/\s+/g, " ").trim();
+  if (!clean) return undefined;
+  return clean.length <= 120 ? clean : `${clean.slice(0, 117).trim()}...`;
+}
+
+function roundCoordinate(value: number): number {
+  return Math.round(value * 100000) / 100000;
+}
+
+function hasSamePoiOrder(left: Poi[], right: Poi[]): boolean {
+  return left.length === right.length && left.every((poi, index) => poi.id === right[index]?.id);
 }
 
 async function copyToClipboard(value: string): Promise<boolean> {
